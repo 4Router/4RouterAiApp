@@ -1,0 +1,77 @@
+{
+    "name": "4routerai",
+    "version": "1.0.0",
+    "description": "All-in-one AI coding assistant - Claude Code & Codex in a single app",
+    "main": "dist/main/index.js",
+    "scripts": {
+        "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
+        "dev:main": "tsc -p tsconfig.main.json --watch",
+        "dev:renderer": "vite dev",
+        "build": "npm run build:main && npm run build:renderer",
+        "build:main": "tsc -p tsconfig.main.json",
+        "build:renderer": "vite build",
+        "bundle-tools": "node scripts/bundle-tools.mjs",
+        "package": "npm run build && npm run bundle-tools && electron-builder --win",
+        "start": "electron .",
+        "rebuild-pty": "electron-rebuild -f -w node-pty"
+    },
+    "author": "4RouterAi",
+    "license": "MIT",
+    "devDependencies": {
+        "@types/node": "^20.11.0",
+        "concurrently": "^8.2.2",
+        "electron": "^33.0.0",
+        "electron-builder": "^25.1.0",
+        "electron-rebuild": "^3.2.9",
+        "typescript": "^5.5.0",
+        "vite": "^6.0.0"
+    },
+    "dependencies": {
+        "@xterm/addon-fit": "^0.10.0",
+        "@xterm/addon-unicode11": "^0.8.0",
+        "@xterm/addon-web-links": "^0.11.0",
+        "@xterm/xterm": "^5.5.0",
+        "electron-store": "^8.2.0",
+        "node-pty": "^1.0.0"
+    },
+    "build": {
+        "appId": "com.4routerai.app",
+        "productName": "4RouterAi",
+        "directories": {
+            "output": "release"
+        },
+        "win": {
+            "icon": "resources/icon.ico",
+            "target": [
+                {
+                    "target": "nsis",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ]
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true
+        },
+        "asar": true,
+        "asarUnpack": [
+            "resources/bundled-tools/**",
+            "node_modules/node-pty/**"
+        ],
+        "extraResources": [
+            {
+                "from": "resources/bundled-tools",
+                "to": "bundled-tools"
+            }
+        ],
+        "files": [
+            "dist/**/*",
+            "resources/**/*",
+            "!resources/bundled-tools/*/node_modules/.cache/**"
+        ]
+    }
+}

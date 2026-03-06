@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self';">
+  <title>4RouterAi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="./styles/global.css">
+</head>
+
+<body>
+  <!-- Custom Title Bar -->
+  <header id="titlebar">
+    <div class="titlebar-drag">
+      <div class="titlebar-logo">
+        <img src="./icon.png" class="logo-icon" alt="icon">
+        <span class="logo-text">4RouterAi</span>
+      </div>
+    </div>
+    <div class="titlebar-controls">
+      <button id="btn-minimize" class="titlebar-btn" title="最小化">
+        <svg width="12" height="12" viewBox="0 0 12 12">
+          <rect y="5" width="12" height="2" fill="currentColor" />
+        </svg>
+      </button>
+      <button id="btn-maximize" class="titlebar-btn" title="最大化">
+        <svg width="12" height="12" viewBox="0 0 12 12">
+          <rect x="1" y="1" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none" />
+        </svg>
+      </button>
+      <button id="btn-close" class="titlebar-btn titlebar-btn-close" title="关闭">
+        <svg width="12" height="12" viewBox="0 0 12 12">
+          <path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="1.5" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Welcome / Setup Screen -->
+  <div id="welcome-screen" class="screen">
+    <div class="welcome-container">
+      <div class="welcome-hero">
+        <div class="welcome-icon-pulse">⚡</div>
+        <h1>欢迎使用 4RouterAi</h1>
+        <p class="welcome-subtitle">统一的 AI 编程助手，Claude Code 与 Codex 尽在指尖</p>
+      </div>
+
+      <div class="setup-cards">
+        <!-- Claude Code -->
+        <div class="setup-card" data-provider="anthropic">
+          <div class="setup-card-header">
+            <span class="tool-icon">🟣</span>
+            <h3>Claude Code</h3>
+            <span class="setup-status" id="status-anthropic">未配置</span>
+          </div>
+          <p>Anthropic 的 AI 编程助手</p>
+          <div class="api-key-input-group">
+            <input type="password" id="key-anthropic" placeholder="输入 ANTHROPIC_API_KEY" class="api-key-input"
+              autocomplete="off">
+            <button class="btn-toggle-visibility" data-target="key-anthropic" title="显示/隐藏">👁</button>
+          </div>
+          <div class="base-url-input-group">
+            <input type="text" id="baseurl-anthropic" placeholder="Base URL (默认: https://api.anthropic.com)"
+              class="text-input" autocomplete="off">
+          </div>
+        </div>
+
+        <!-- Codex -->
+        <div class="setup-card" data-provider="openai">
+          <div class="setup-card-header">
+            <span class="tool-icon">🟢</span>
+            <h3>Codex CLI</h3>
+            <span class="setup-status" id="status-openai">未配置</span>
+          </div>
+          <p>OpenAI 的命令行编程代理</p>
+          <div class="api-key-input-group">
+            <input type="password" id="key-openai" placeholder="输入 OPENAI_API_KEY" class="api-key-input"
+              autocomplete="off">
+            <button class="btn-toggle-visibility" data-target="key-openai" title="显示/隐藏">👁</button>
+          </div>
+          <div class="base-url-input-group">
+            <input type="text" id="baseurl-openai" placeholder="Base URL (默认: https://api.openai.com/v1)"
+              class="text-input" autocomplete="off">
+          </div>
+        </div>
+      </div>
+
+      <div class="setup-actions">
+        <button id="btn-save-keys" class="btn-primary">保存并开始</button>
+        <button id="btn-skip-setup" class="btn-secondary">跳过设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Application Screen -->
+  <div id="app-screen" class="screen hidden">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-section">
+        <h4 class="sidebar-title">工具</h4>
+        <button class="tool-launch-btn" data-tool="claude-code" id="btn-launch-claude">
+          <span class="tool-icon">🟣</span>
+          <span class="tool-name">Claude Code</span>
+          <span class="tool-badge" id="badge-claude"></span>
+        </button>
+        <button class="tool-launch-btn" data-tool="codex" id="btn-launch-codex">
+          <span class="tool-icon">🟢</span>
+          <span class="tool-name">Codex CLI</span>
+          <span class="tool-badge" id="badge-codex"></span>
+        </button>
+        <button class="tool-launch-btn" data-tool="terminal" id="btn-launch-terminal">
+          <span class="tool-icon">⬛</span>
+          <span class="tool-name">Terminal</span>
+          <span class="tool-badge" id="badge-terminal">PowerShell</span>
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <h4 class="sidebar-title">工作目录</h4>
+        <button id="btn-select-cwd" class="sidebar-action-btn">
+          <span>📁</span>
+          <span id="cwd-display" class="cwd-text">选择目录...</span>
+        </button>
+      </div>
+
+      <div class="sidebar-bottom">
+        <button id="btn-settings" class="sidebar-action-btn">
+          <span>⚙️</span>
+          <span>设置</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Tab Bar + Terminal Area -->
+    <main id="main-content">
+      <div id="tab-bar">
+        <div id="tab-bar-empty">启动一个工具以开始使用</div>
+      </div>
+      <div id="terminal-container">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon">⚡</div>
+          <h2>选择左侧工具，开始 AI 编程之旅</h2>
+          <p>Claude Code 和 Codex CLI 已就绪</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- File Explorer Panel (collapsible) -->
+    <aside id="file-explorer" class="file-explorer collapsed">
+      <div class="file-explorer-header">
+        <button id="btn-toggle-explorer" class="btn-icon" title="Toggle File Explorer">📁</button>
+        <span id="explorer-path" class="explorer-path">No directory</span>
+      </div>
+      <div id="file-tree" class="file-tree"></div>
+    </aside>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>设置</h2>
+        <button id="btn-close-settings" class="btn-icon">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-group">
+          <h3>Anthropic (Claude Code)</h3>
+          <div class="setting-row">
+            <label>API Key</label>
+            <div class="api-key-input-group">
+              <input type="password" id="settings-key-anthropic" class="api-key-input" placeholder="sk-ant-..."
+                autocomplete="off">
+              <button class="btn-toggle-visibility" data-target="settings-key-anthropic">👁</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label>Base URL</label>
+            <input type="text" id="settings-baseurl-anthropic" class="text-input"
+              placeholder="https://api.anthropic.com">
+          </div>
+          <div class="setting-row">
+            <label>Model</label>
+            <input type="text" id="settings-model-anthropic" class="text-input" placeholder="opus">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>OpenAI (Codex CLI)</h3>
+          <div class="setting-row">
+            <label>API Key</label>
+            <div class="api-key-input-group">
+              <input type="password" id="settings-key-openai" class="api-key-input" placeholder="sk-..."
+                autocomplete="off">
+              <button class="btn-toggle-visibility" data-target="settings-key-openai">👁</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label>Base URL</label>
+            <input type="text" id="settings-baseurl-openai" class="text-input" placeholder="https://api.openai.com/v1">
+          </div>
+          <div class="setting-row">
+            <label>Model</label>
+            <input type="text" id="settings-model-openai" class="text-input" placeholder="gpt-5.3-codex">
+          </div>
+          <div class="setting-row">
+            <label>Reasoning Effort</label>
+            <input type="text" id="settings-reasoning-effort" class="text-input" placeholder="xhigh">
+          </div>
+          <div class="setting-row">
+            <label>Verbosity</label>
+            <input type="text" id="settings-verbosity" class="text-input" placeholder="high">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>网络代理</h3>
+          <div class="setting-row">
+            <label>HTTP(S) 代理</label>
+            <input type="text" id="settings-proxy" class="text-input" placeholder="http://127.0.0.1:7890">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>外观</h3>
+          <div class="setting-row">
+            <label>主题</label>
+            <select id="settings-theme" class="text-input small">
+              <option value="dark">Dark 🌙</option>
+              <option value="light">Light ☀️</option>
+              <option value="fruit">Fruit 🍊</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>终端</h3>
+          <div class="setting-row">
+            <label>字体大小</label>
+            <input type="number" id="settings-fontsize" class="text-input small" value="14" min="10" max="24">
+          </div>
+          <div class="setting-row">
+            <label>字体</label>
+            <input type="text" id="settings-fontfamily" class="text-input" value="JetBrains Mono, Consolas, monospace">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>调试信息 — 启动参数预览</h3>
+          <div class="setting-row">
+            <label>Claude Code (--settings JSON)</label>
+            <pre id="debug-claude-config" class="debug-preview"
+              style="background:#161b22;color:#8b949e;padding:8px 12px;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:200px;margin:4px 0 0 0;border:1px solid #30363d;">加载中...</pre>
+          </div>
+          <div class="setting-row">
+            <label>Codex (-c flags)</label>
+            <pre id="debug-codex-config" class="debug-preview"
+              style="background:#161b22;color:#8b949e;padding:8px 12px;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:200px;margin:4px 0 0 0;border:1px solid #30363d;">加载中...</pre>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-save-settings" class="btn-primary">保存</button>
+        <button id="btn-cancel-settings" class="btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+
+</html>

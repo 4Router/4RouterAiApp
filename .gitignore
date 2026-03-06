@@ -1,0 +1,83 @@
+# ========================
+# Dependencies
+# ========================
+node_modules/
+
+# ========================
+# Build Output
+# ========================
+dist/
+
+# ========================
+# Electron-Builder Output
+# ========================
+release/
+*.exe
+*.blockmap
+*.msi
+*.dmg
+*.AppImage
+*.snap
+*.deb
+*.rpm
+
+# ========================
+# Bundled Tools (generated)
+# ========================
+resources/bundled-tools/
+
+# ========================
+# Vite & Build Cache
+# ========================
+.vite/
+.cache/
+*.tsbuildinfo
+
+# ========================
+# Environment Variables
+# ========================
+.env
+.env.local
+.env.*.local
+
+# ========================
+# Logs
+# ========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+electron-debug.log*
+
+# ========================
+# Editor & IDE
+# ========================
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*~
+
+# ========================
+# OS Generated Files
+# ========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ========================
+# Misc
+# ========================
+*.local
+*.pid
+*.seed
+coverage/
+.nyc_output/
