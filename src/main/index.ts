@@ -3,11 +3,13 @@ import * as path from 'path';
 import { PtyManager } from './pty-manager';
 import { ToolManager } from './tool-manager';
 import { ConfigStore } from './config-store';
+import { AppUpdater } from './app-updater';
 
 let mainWindow: BrowserWindow | null = null;
 let ptyManager: PtyManager;
 let toolManager: ToolManager;
 let configStore: ConfigStore;
+let appUpdater: AppUpdater;
 
 function getResourcesPath(): string {
     if (app.isPackaged) {
@@ -162,6 +164,15 @@ function setupIPC(): void {
     ipcMain.handle('app:get-version', () => app.getVersion());
     ipcMain.handle('app:is-encryption-available', () => safeStorage.isEncryptionAvailable());
 
+    // ===== App Update =====
+    ipcMain.handle('app:check-app-update', async () => {
+        return appUpdater.checkForUpdate();
+    });
+
+    ipcMain.handle('app:download-update', async (_event, downloadUrl: string) => {
+        return appUpdater.downloadUpdate(downloadUrl);
+    });
+
     // ===== Dialog =====
     ipcMain.handle('dialog:select-directory', async () => {
         const { dialog } = require('electron');
@@ -200,6 +211,7 @@ app.whenReady().then(() => {
     configStore = new ConfigStore();
     toolManager = new ToolManager(bundledToolsPath, configStore);
     ptyManager = new PtyManager(toolManager);
+    appUpdater = new AppUpdater(configStore);
 
     // Forward PTY data to renderer
     ptyManager.onData((sessionId: string, data: string) => {
@@ -212,6 +224,9 @@ app.whenReady().then(() => {
 
     setupIPC();
     createWindow();
+
+    // Set mainWindow reference for app updater progress events
+    appUpdater.setMainWindow(mainWindow);
 });
 
 app.on('window-all-closed', () => {

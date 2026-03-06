@@ -60,6 +60,13 @@ contextBridge.exposeInMainWorld('routerAi', {
     app: {
         getVersion: () => ipcRenderer.invoke('app:get-version'),
         isEncryptionAvailable: () => ipcRenderer.invoke('app:is-encryption-available'),
+        checkAppUpdate: () => ipcRenderer.invoke('app:check-app-update'),
+        downloadUpdate: (url: string) => ipcRenderer.invoke('app:download-update', url),
+        onUpdateProgress: (callback: (percent: number, message?: string) => void) => {
+            const listener = (_event: any, percent: number, message?: string) => callback(percent, message);
+            ipcRenderer.on('app-update:progress', listener);
+            return () => ipcRenderer.removeListener('app-update:progress', listener);
+        },
     },
 
     // ===== Dialog =====

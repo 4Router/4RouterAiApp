@@ -274,7 +274,100 @@ function setupSidebar() {
 
     $('#btn-settings')?.addEventListener('click', () => openSettings());
 
+    setupAppUpdateButton();
+
     refreshToolStatus();
+}
+
+// ===== App Update (GitHub Releases) =====
+function setupAppUpdateButton() {
+    const btn = /** @type {HTMLElement} */ ($('#btn-check-update'));
+    const statusText = /** @type {HTMLElement} */ ($('#update-status-text'));
+    if (!btn || !statusText) return;
+
+    /** @type {{ downloadUrl: string; latestVersion: string } | null} */
+    let pendingUpdate = null;
+    let isWorking = false;
+
+    // Listen for download progress events
+    api.app.onUpdateProgress((/** @type {number} */ percent, /** @type {string|undefined} */ message) => {
+        if (message) {
+            statusText.textContent = message;
+        } else if (percent >= 0) {
+            statusText.textContent = `下载中 ${percent}%`;
+        }
+    });
+
+    btn.addEventListener('click', async () => {
+        if (isWorking) return;
+
+        // If we already know there's an update, download it
+        if (pendingUpdate) {
+            isWorking = true;
+            statusText.textContent = '正在测速...';
+            btn.classList.add('updating');
+
+            try {
+                const result = await api.app.downloadUpdate(pendingUpdate.downloadUrl);
+                if (result.success) {
+                    statusText.textContent = '下载完成，请安装';
+                } else {
+                    statusText.textContent = '下载失败';
+                    console.error('Download failed:', result.error);
+                    setTimeout(() => {
+                        statusText.textContent = `更新 v${pendingUpdate?.latestVersion}`;
+                    }, 3000);
+                }
+            } catch (err) {
+                statusText.textContent = '下载失败';
+                console.error('Download error:', err);
+                setTimeout(() => {
+                    statusText.textContent = `更新 v${pendingUpdate?.latestVersion}`;
+                }, 3000);
+            } finally {
+                isWorking = false;
+                btn.classList.remove('updating');
+            }
+            return;
+        }
+
+        // Check for update
+        isWorking = true;
+        statusText.textContent = '检查中...';
+
+        try {
+            const result = await api.app.checkAppUpdate();
+            if (result.hasUpdate && result.downloadUrl) {
+                pendingUpdate = { downloadUrl: result.downloadUrl, latestVersion: result.latestVersion };
+                statusText.textContent = '点击更新';
+                btn.title = `${result.currentVersion} → ${result.latestVersion}`;
+                btn.classList.add('has-update');
+            } else if (result.hasUpdate) {
+                statusText.textContent = `新版本 v${result.latestVersion}`;
+                btn.title = '未找到下载文件，请前往 GitHub 手动下载';
+            } else {
+                statusText.textContent = '已是最新';
+                btn.title = `当前版本: v${result.currentVersion}`;
+                setTimeout(() => { statusText.textContent = '检查更新'; }, 3000);
+            }
+        } catch (err) {
+            statusText.textContent = '检查失败';
+            console.error('Update check error:', err);
+            setTimeout(() => { statusText.textContent = '检查更新'; }, 3000);
+        } finally {
+            isWorking = false;
+        }
+    });
+
+    // Auto-check on startup (silent, non-blocking)
+    api.app.checkAppUpdate().then((/** @type {any} */ result) => {
+        if (result.hasUpdate && result.downloadUrl) {
+            pendingUpdate = { downloadUrl: result.downloadUrl, latestVersion: result.latestVersion };
+            statusText.textContent = '点击更新';
+            btn.title = `${result.currentVersion} → ${result.latestVersion}`;
+            btn.classList.add('has-update');
+        }
+    }).catch(() => { /* ignore startup check failures */ });
 }
 
 async function refreshToolStatus() {
