@@ -21,6 +21,10 @@
 
 **4RouterAi** 是一个开箱即用的多Agent桌面应用，将 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic) 和 [Codex CLI](https://github.com/openai/codex) (OpenAI) 两大 AI 编程工具整合到一个统一的界面中。无需复杂的环境配置，开箱即用。
 
+<p align="center">
+  <img src="docs/images/screenshot.png" alt="4RouterAi 应用截图" width="800">
+</p>
+
 ## 🎯 核心特性
 
 ### 🔧 双工具集成
