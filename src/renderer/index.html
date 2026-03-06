@@ -277,6 +277,25 @@
     </div>
   </div>
 
+  <!-- Config Update Modal -->
+  <div id="config-update-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content" style="max-width: 520px;">
+      <div class="modal-header">
+        <h2>🔄 发现新的模型配置</h2>
+        <button id="btn-close-config-modal" class="btn-icon">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom: 12px; opacity: 0.8;">检测到远程推荐配置有更新，以下是变动项：</p>
+        <div id="config-changes-list" style="margin-bottom: 16px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-apply-config" class="btn-primary">应用更新</button>
+        <button id="btn-dismiss-config" class="btn-secondary">暂不更新</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="./app.js"></script>
 </body>
 

@@ -79,6 +79,7 @@ async function init() {
     setupPtyListeners();
     setupResize();
     setupFileExplorer();
+    checkRemoteConfigOnStartup();
 }
 
 async function applyTheme(/** @type {string} */ themeOverride) {
@@ -880,6 +881,44 @@ function renderTreeEntries(/** @type {HTMLElement} */ container, /** @type {any[
             container.appendChild(item);
         }
     }
+}
+// ===== Remote Config Sync =====
+function checkRemoteConfigOnStartup() {
+    api.app.checkRemoteConfig().then((/** @type {any} */ result) => {
+        if (!result.hasChanges || !result.changes.length) return;
+
+        const modal = /** @type {HTMLElement} */ ($('#config-update-modal'));
+        const changesList = /** @type {HTMLElement} */ ($('#config-changes-list'));
+        if (!modal || !changesList) return;
+
+        // Build changes table
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+        html += '<tr style="opacity:0.6;"><th style="text-align:left;padding:6px 8px;">配置项</th><th style="text-align:left;padding:6px 8px;">当前值</th><th style="text-align:left;padding:6px 8px;"></th><th style="text-align:left;padding:6px 8px;">新值</th></tr>';
+        for (const change of result.changes) {
+            html += `<tr style="border-top:1px solid rgba(128,128,128,0.2);">`;
+            html += `<td style="padding:6px 8px;font-weight:500;">${change.key}</td>`;
+            html += `<td style="padding:6px 8px;opacity:0.6;text-decoration:line-through;">${change.oldValue}</td>`;
+            html += `<td style="padding:6px 8px;">→</td>`;
+            html += `<td style="padding:6px 8px;color:#3fb950;font-weight:600;">${change.newValue}</td>`;
+            html += `</tr>`;
+        }
+        html += '</table>';
+        changesList.innerHTML = html;
+
+        // Show modal
+        modal.classList.remove('hidden');
+
+        const closeModal = () => modal.classList.add('hidden');
+
+        $('#btn-close-config-modal')?.addEventListener('click', closeModal);
+        $('#btn-dismiss-config')?.addEventListener('click', closeModal);
+        modal.querySelector('.modal-overlay')?.addEventListener('click', closeModal);
+
+        $('#btn-apply-config')?.addEventListener('click', async () => {
+            await api.app.applyRemoteConfig(result.remoteConfig);
+            closeModal();
+        });
+    }).catch(() => { /* ignore startup config check failures */ });
 }
 
 // ===== Boot =====

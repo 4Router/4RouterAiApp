@@ -7,6 +7,7 @@ import * as os from 'os';
 import { ConfigStore } from './config-store';
 
 const GITHUB_API_URL = 'https://api.github.com/repos/4Router/4RouterAiApp/releases/latest';
+const REMOTE_CONFIG_URL = 'https://raw.githubusercontent.com/4Router/4RouterAiApp/main/remote-config.json';
 
 /**
  * All Chinese GitHub proxy/mirror services for speed testing.
@@ -345,4 +346,113 @@ export class AppUpdater {
             this.mainWindow.webContents.send('app-update:progress', percent, message);
         }
     }
+
+    /**
+     * Fetch remote model config from GitHub and compare with local settings.
+     * Returns a list of changes if the remote config differs.
+     */
+    async checkRemoteConfig(): Promise<{ hasChanges: boolean; changes: ConfigChange[]; remoteConfig: Record<string, any> }> {
+        const noResult = { hasChanges: false, changes: [] as ConfigChange[], remoteConfig: {} };
+
+        try {
+            // Race all proxy mirrors + direct URL to get the fastest response
+            const configUrl = REMOTE_CONFIG_URL;
+            const fetchAttempts = [
+                // Direct fetch
+                httpsGet(configUrl).catch(() => null),
+                // Through mirrors
+                ...PROXY_MIRRORS.map(([_name, baseUrl]) =>
+                    httpsGet(baseUrl + configUrl).catch(() => null)
+                ),
+            ];
+
+            // Use Promise.any to get the first successful response
+            const resp = await Promise.any(
+                fetchAttempts.map(async (attempt) => {
+                    const r = await attempt;
+                    if (r && r.statusCode === 200 && r.body) return r;
+                    throw new Error('not ok');
+                })
+            );
+
+            console.log('[AppUpdater] Remote config fetched successfully');
+            const remoteConfig = JSON.parse(resp.body);
+            const changes: ConfigChange[] = [];
+
+            // Compare models
+            if (remoteConfig.models) {
+                const localModels = (this.configStore.get('models') as Record<string, string>) || {};
+                for (const [provider, remoteModel] of Object.entries(remoteConfig.models)) {
+                    const localModel = localModels[provider] || '';
+                    if (localModel !== remoteModel) {
+                        changes.push({
+                            key: `模型 (${provider})`,
+                            configKey: `models.${provider}`,
+                            oldValue: localModel || '(未设置)',
+                            newValue: remoteModel as string,
+                        });
+                    }
+                }
+            }
+
+            // Compare codexReasoningEffort
+            if (remoteConfig.codexReasoningEffort !== undefined) {
+                const local = (this.configStore.get('codexReasoningEffort') as string) || '';
+                if (local !== remoteConfig.codexReasoningEffort) {
+                    changes.push({
+                        key: 'Codex Reasoning Effort',
+                        configKey: 'codexReasoningEffort',
+                        oldValue: local || '(未设置)',
+                        newValue: remoteConfig.codexReasoningEffort,
+                    });
+                }
+            }
+
+            // Compare codexVerbosity
+            if (remoteConfig.codexVerbosity !== undefined) {
+                const local = (this.configStore.get('codexVerbosity') as string) || '';
+                if (local !== remoteConfig.codexVerbosity) {
+                    changes.push({
+                        key: 'Codex Verbosity',
+                        configKey: 'codexVerbosity',
+                        oldValue: local || '(未设置)',
+                        newValue: remoteConfig.codexVerbosity,
+                    });
+                }
+            }
+
+            console.log(`[AppUpdater] Remote config check: ${changes.length} change(s) found`);
+            return { hasChanges: changes.length > 0, changes, remoteConfig };
+        } catch (err) {
+            console.error('[AppUpdater] Failed to check remote config:', err);
+            return noResult;
+        }
+    }
+
+    /**
+     * Apply remote config changes to local config store.
+     */
+    applyRemoteConfig(remoteConfig: Record<string, any>): void {
+        if (remoteConfig.models) {
+            const localModels = (this.configStore.get('models') as Record<string, string>) || {};
+            for (const [provider, model] of Object.entries(remoteConfig.models)) {
+                localModels[provider] = model as string;
+            }
+            this.configStore.set('models', localModels);
+        }
+        if (remoteConfig.codexReasoningEffort !== undefined) {
+            this.configStore.set('codexReasoningEffort', remoteConfig.codexReasoningEffort);
+        }
+        if (remoteConfig.codexVerbosity !== undefined) {
+            this.configStore.set('codexVerbosity', remoteConfig.codexVerbosity);
+        }
+        console.log('[AppUpdater] Remote config applied successfully');
+    }
+}
+
+export interface ConfigChange {
+    key: string;
+    configKey: string;
+    oldValue: string;
+    newValue: string;
 }

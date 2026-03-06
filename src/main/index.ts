@@ -173,6 +173,16 @@ function setupIPC(): void {
         return appUpdater.downloadUpdate(downloadUrl);
     });
 
+    // ===== Remote Config Sync =====
+    ipcMain.handle('app:check-remote-config', async () => {
+        return appUpdater.checkRemoteConfig();
+    });
+
+    ipcMain.handle('app:apply-remote-config', async (_event, remoteConfig: Record<string, any>) => {
+        appUpdater.applyRemoteConfig(remoteConfig);
+        return { success: true };
+    });
+
     // ===== Dialog =====
     ipcMain.handle('dialog:select-directory', async () => {
         const { dialog } = require('electron');
