@@ -1,6 +1,6 @@
 {
     "name": "4routerai",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "All-in-one AI coding assistant - Claude Code & Codex in a single app",
     "main": "dist/main/index.js",
     "scripts": {
