@@ -4,6 +4,7 @@ import Store from 'electron-store';
 interface ConfigSchema {
     theme: 'dark' | 'light' | 'fruit';
     defaultCwd: string;
+    workdirs: string[];
     proxy: string;
     encryptedKeys: Record<string, string>;
     baseUrls: Record<string, string>;
@@ -21,6 +22,7 @@ interface ConfigSchema {
 const defaults: ConfigSchema = {
     theme: 'light',
     defaultCwd: '',
+    workdirs: [],
     proxy: '',
     encryptedKeys: {},
     baseUrls: {},
@@ -131,5 +133,14 @@ export class ConfigStore {
 
     markLaunched(): void {
         this.store.set('firstLaunch', false);
+    }
+
+    /**
+     * Wipe the entire config store (API keys, base URLs, models, theme, fonts, …).
+     * Defaults supplied to the constructor are re-applied on subsequent reads,
+     * so `firstLaunch` flips back to true and the welcome screen is shown again.
+     */
+    resetAll(): void {
+        this.store.clear();
     }
 }

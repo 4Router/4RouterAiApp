@@ -15,6 +15,7 @@ const state = {
     tabs: /** @type {TabState[]} */ ([]),
     activeTabId: /** @type {string|null} */ (null),
     currentCwd: '',
+    workdirs: /** @type {string[]} */ ([]),
     tabCounter: 0,
 };
 
@@ -40,7 +41,8 @@ const tabBar = /** @type {HTMLElement} */ ($('#tab-bar'));
 const tabBarEmpty = /** @type {HTMLElement} */ ($('#tab-bar-empty'));const terminalContainer = /** @type {HTMLElement} */ ($('#terminal-container'));
 const emptyState = /** @type {HTMLElement} */ ($('#empty-state'));
 const settingsModal = /** @type {HTMLElement} */ ($('#settings-modal'));
-const cwdDisplay = /** @type {HTMLElement} */ ($('#cwd-display'));
+const cwdList = /** @type {HTMLElement} */ ($('#cwd-list'));
+const cwdListEmpty = /** @type {HTMLElement} */ ($('#cwd-list-empty'));
 const fileExplorer = /** @type {HTMLElement} */ ($('#file-explorer'));
 const fileTree = /** @type {HTMLElement} */ ($('#file-tree'));
 const explorerPath = /** @type {HTMLElement} */ ($('#explorer-path'));
@@ -75,6 +77,7 @@ async function init() {
     setupWelcomeScreen();
     setupSidebar();
     setupSettings();
+    setupAuthModal();
     setupPtyListeners();
     setupResize();
     setupFileExplorer();
@@ -175,12 +178,17 @@ async function checkFirstLaunch() {
         showWelcomeScreen();
     }
 
-    // Load saved CWD
+    // Load saved working directories (migrate legacy single defaultCwd → list)
+    let workdirs = await api.config.get('workdirs');
     const savedCwd = await api.config.get('defaultCwd');
-    if (savedCwd) {
-        state.currentCwd = savedCwd;
-        cwdDisplay.textContent = shortenPath(savedCwd);
+    workdirs = Array.isArray(workdirs) ? workdirs.filter(Boolean) : [];
+    if (!workdirs.length && savedCwd) {
+        workdirs = [savedCwd];
+        api.config.set('workdirs', workdirs);
     }
+    state.workdirs = workdirs;
+    state.currentCwd = savedCwd || workdirs[0] || '';
+    renderWorkdirList();
 }
 
 function showWelcomeScreen() {
@@ -256,50 +264,124 @@ function updateSetupStatus(/** @type {string} */ provider, /** @type {boolean} *
     }
 }
 
-// ===== 4Router WebView Login Flow =====
+// ===== 4Router Embedded Login Flow =====
+/** @type {ReturnType<typeof setInterval> | null} */
+let authPollTimer = null;
+let authPolling = false;
+let authProvisioning = false;
+
+function openAuthModal() {
+    const modal = /** @type {HTMLElement} */ ($('#auth-login-modal'));
+    const webview = /** @type {any} */ (document.getElementById('auth-webview'));
+    const statusEl = /** @type {HTMLElement} */ ($('#auth-modal-status'));
+    if (!modal || !webview) return;
+
+    statusEl.textContent = '正在加载登录页…';
+    webview.setAttribute('src', 'https://4router.net/login');
+    modal.classList.remove('hidden');
+}
+
+function closeAuthModal() {
+    const modal = /** @type {HTMLElement} */ ($('#auth-login-modal'));
+    const webview = /** @type {any} */ (document.getElementById('auth-webview'));
+    if (!modal) return;
+
+    modal.classList.add('hidden');
+    if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
+    authPolling = false;
+    // Stop the in-modal page so it doesn't keep running in the background.
+    if (webview) webview.setAttribute('src', 'about:blank');
+}
+
 async function handle4RouterLogin() {
-    const btn1 = /** @type {HTMLButtonElement} */ ($('#btn-login-4router'));
-    const btn2 = /** @type {HTMLButtonElement} */ ($('#btn-login-4router-manual'));
-    const origText1 = btn1?.textContent;
-    const origText2 = btn2?.textContent;
+    if (authProvisioning) return; // already finishing up
+    openAuthModal();
 
-    try {
-        // Disable buttons and show progress
-        if (btn1) { btn1.textContent = '正在登录...'; btn1.disabled = true; }
-        if (btn2) { btn2.textContent = '正在登录...'; btn2.disabled = true; }
+    const statusEl = /** @type {HTMLElement} */ ($('#auth-modal-status'));
 
-        // Step 1: Open WebView login (AuthManager opens a child BrowserWindow)
-        const loginResult = await api.auth.loginWebView();
-
-        if (!loginResult.success) {
-            // User cancelled or login failed
-            if (loginResult.error !== '用户取消登录') {
-                alert(`登录失败: ${loginResult.error}`);
+    const tick = async () => {
+        if (authPolling || authProvisioning) return;
+        authPolling = true;
+        try {
+            const status = await api.auth.checkLoginStatus();
+            if (!status?.loggedIn) {
+                if (statusEl) statusEl.textContent = '等待登录…';
+                return;
             }
-            return;
+
+            // Logged in — stop polling, close modal, provision keys
+            authProvisioning = true;
+            if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
+            closeAuthModal();
+            showToast('登录成功，正在配置 API Key…', 'info', 4000);
+
+            try {
+                const provisionResult = await api.provision.createKeys();
+                if (!provisionResult.success) {
+                    showToast(`Key 创建失败: ${provisionResult.error}`, 'error', 5000);
+                    return;
+                }
+                await api.config.set('firstLaunch', false);
+                showAppScreen();
+                await refreshToolStatus();
+                showToast('配置完成 ✓', 'success', 2500);
+            } catch (err) {
+                showToast(`配置失败: ${err}`, 'error', 5000);
+            } finally {
+                authProvisioning = false;
+            }
+        } finally {
+            authPolling = false;
         }
+    };
 
-        // Step 2: Login succeeded, create API Keys
-        if (btn1) btn1.textContent = '正在配置 Key...';
-        if (btn2) btn2.textContent = '正在配置 Key...';
+    if (authPollTimer) clearInterval(authPollTimer);
+    authPollTimer = setInterval(tick, 3000);
+    // Fire one immediately in case the user is already logged in from a prior session.
+    tick();
+}
 
-        const provisionResult = await api.provision.createKeys();
+// ===== Toast =====
+/**
+ * @param {string} message
+ * @param {'info'|'success'|'error'} [type='info']
+ * @param {number} [durationMs=2500]
+ */
+function showToast(message, type = 'info', durationMs = 2500) {
+    const host = document.getElementById('toast-host');
+    if (!host) return;
 
-        if (!provisionResult.success) {
-            alert(`Key 创建失败: ${provisionResult.error}`);
-            return;
-        }
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = message;
+    host.appendChild(el);
 
-        // Step 3: Configuration complete, enter main screen
-        await api.config.set('firstLaunch', false);
-        showAppScreen();
-        await refreshToolStatus();
+    // Trigger enter animation
+    requestAnimationFrame(() => el.classList.add('toast-visible'));
 
-    } catch (err) {
-        alert(`操作失败: ${err}`);
-    } finally {
-        if (btn1) { btn1.textContent = origText1; btn1.disabled = false; }
-        if (btn2) { btn2.textContent = origText2; btn2.disabled = false; }
+    setTimeout(() => {
+        el.classList.remove('toast-visible');
+        setTimeout(() => el.remove(), 250);
+    }, durationMs);
+}
+
+function setupAuthModal() {
+    $('#btn-close-auth-modal')?.addEventListener('click', closeAuthModal);
+    const modal = /** @type {HTMLElement} */ ($('#auth-login-modal'));
+    modal?.querySelector('.modal-overlay')?.addEventListener('click', closeAuthModal);
+
+    // Update status when webview navigates / fails
+    const webview = /** @type {any} */ (document.getElementById('auth-webview'));
+    const statusEl = /** @type {HTMLElement} */ ($('#auth-modal-status'));
+    if (webview && statusEl) {
+        webview.addEventListener('did-start-loading', () => { statusEl.textContent = '加载中…'; });
+        webview.addEventListener('did-stop-loading', () => {
+            if (!authProvisioning) statusEl.textContent = '等待登录…';
+        });
+        webview.addEventListener('did-fail-load', (/** @type {any} */ e) => {
+            if (e?.errorCode === -3) return; // ABORTED — happens when we navigate to about:blank
+            statusEl.textContent = `加载失败 (${e?.errorCode || ''})`;
+        });
     }
 }
 
@@ -319,15 +401,7 @@ function setupSidebar() {
         updateTool('codex', 'badge-codex');
     });
 
-    $('#btn-select-cwd')?.addEventListener('click', async () => {
-        const dir = await api.dialog.selectDirectory();
-        if (dir) {
-            state.currentCwd = dir;
-            cwdDisplay.textContent = shortenPath(dir);
-            await api.config.set('defaultCwd', dir);
-            loadFileTree(dir);
-        }
-    });
+    $('#btn-add-cwd')?.addEventListener('click', addWorkdir);
 
     $('#btn-settings')?.addEventListener('click', () => openSettings());
 
@@ -338,6 +412,137 @@ function setupSidebar() {
     setupAppUpdateButton();
 
     refreshToolStatus();
+}
+
+// ===== Working Directories =====
+function renderWorkdirList() {
+    if (!cwdList) return;
+    // Remove existing items but keep the empty-state placeholder element.
+    cwdList.querySelectorAll('.cwd-item').forEach((el) => el.remove());
+
+    if (!state.workdirs.length) {
+        cwdListEmpty?.classList.remove('hidden');
+        return;
+    }
+    cwdListEmpty?.classList.add('hidden');
+
+    for (const dir of state.workdirs) {
+        const item = document.createElement('div');
+        item.className = 'cwd-item';
+        item.setAttribute('data-path', dir);
+        item.title = dir;
+
+        const icon = document.createElement('span');
+        icon.className = 'cwd-item-icon';
+        icon.textContent = '📁';
+
+        // Split into parent path + leaf so the last segment is always shown in
+        // full; only the parent gets truncated (…) when the sidebar is narrow.
+        const norm = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+        const slash = norm.lastIndexOf('/');
+        const text = document.createElement('span');
+        text.className = 'cwd-item-text';
+        if (slash > 0) {
+            const parentSpan = document.createElement('span');
+            parentSpan.className = 'cwd-item-parent';
+            parentSpan.textContent = norm.slice(0, slash);
+            text.appendChild(parentSpan);
+        }
+        const leafSpan = document.createElement('span');
+        leafSpan.className = 'cwd-item-leaf';
+        leafSpan.textContent = slash > 0 ? norm.slice(slash) : (norm || dir);
+        text.appendChild(leafSpan);
+
+        const remove = document.createElement('span');
+        remove.className = 'cwd-remove';
+        remove.title = '移除';
+        remove.textContent = '×';
+
+        item.append(icon, text, remove);
+        item.addEventListener('click', (e) => {
+            if (/** @type {HTMLElement} */ (e.target)?.closest('.cwd-remove')) {
+                removeWorkdir(dir);
+            } else {
+                selectWorkdir(dir);
+            }
+        });
+        cwdList.appendChild(item);
+    }
+
+    syncDirLinkage();
+}
+
+/**
+ * Two-way highlight: mark the selected directory's entry, and mark every tab
+ * bound to it. `state.currentCwd` is the single source of truth and always
+ * tracks the active tab's directory, so the link stays in sync both ways.
+ */
+function syncDirLinkage() {
+    const linked = state.currentCwd;
+    if (cwdList) {
+        cwdList.querySelectorAll('.cwd-item').forEach((el) => {
+            el.classList.toggle('selected', !!linked && el.getAttribute('data-path') === linked);
+        });
+    }
+    for (const tab of state.tabs) {
+        tab.tabElement.classList.toggle('dir-linked', !!linked && tab.cwd === linked);
+    }
+}
+
+async function addWorkdir() {
+    const dir = await api.dialog.selectDirectory();
+    if (!dir) return;
+    if (!state.workdirs.includes(dir)) {
+        state.workdirs.push(dir);
+        await api.config.set('workdirs', state.workdirs);
+        renderWorkdirList();
+    }
+    selectWorkdir(dir);
+}
+
+/**
+ * Select a working directory: make it the launch target for new tools and, if
+ * a tab is already bound to it, switch to that tab. Drives the dir→tab half of
+ * the two-way highlight.
+ * @param {string} dir
+ */
+function selectWorkdir(dir) {
+    if (!dir) return;
+    state.currentCwd = dir;
+    api.config.set('defaultCwd', dir);
+
+    const bound = state.tabs.filter((t) => t.cwd === dir);
+    const activeIsBound = bound.some((t) => t.id === state.activeTabId);
+    if (bound.length && !activeIsBound) {
+        // Jump to the first tab running in this directory; activateTab re-syncs.
+        activateTab(bound[0].id);
+    } else {
+        loadFileTree(dir);
+        syncDirLinkage();
+    }
+}
+
+/**
+ * Remove a directory bookmark. Tabs already running in it keep running — this
+ * only drops it from the sidebar list.
+ * @param {string} dir
+ */
+async function removeWorkdir(dir) {
+    const idx = state.workdirs.indexOf(dir);
+    if (idx === -1) return;
+    state.workdirs.splice(idx, 1);
+    await api.config.set('workdirs', state.workdirs);
+
+    if (state.currentCwd === dir) {
+        // Fall back to the active tab's directory, then the first remaining one.
+        const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
+        state.currentCwd = (activeTab && activeTab.cwd) || state.workdirs[0] || '';
+        if (state.currentCwd) {
+            api.config.set('defaultCwd', state.currentCwd);
+            loadFileTree(state.currentCwd);
+        }
+    }
+    renderWorkdirList();
 }
 
 // ===== App Update (GitHub Releases) =====
@@ -716,12 +921,15 @@ function activateTab(/** @type {string} */ tabId) {
         tab.wrapper.classList.toggle('hidden', !isActive);
         if (isActive) {
             refitTerminal(tab, { focus: true });
-            // Refresh file explorer for this tab's CWD
+            // The selected working directory follows the active tab (tab→dir link).
             if (tab.cwd) {
+                state.currentCwd = tab.cwd;
                 loadFileTree(tab.cwd);
             }
         }
     }
+
+    syncDirLinkage();
 }
 
 function closeTab(/** @type {string} */ tabId) {
@@ -739,6 +947,7 @@ function closeTab(/** @type {string} */ tabId) {
         state.activeTabId = null;
         tabBarEmpty.classList.remove('hidden');
         emptyState.classList.remove('hidden');
+        syncDirLinkage();
         refreshToolStatus();
     } else if (state.activeTabId === tabId) {
         const newIdx = Math.min(idx, state.tabs.length - 1);
@@ -784,6 +993,7 @@ function setupSettings() {
     const btnClose = /** @type {HTMLElement} */ ($('#btn-close-settings'));
     const btnSave = /** @type {HTMLElement} */ ($('#btn-save-settings'));
     const btnCancel = /** @type {HTMLElement} */ ($('#btn-cancel-settings'));
+    const btnReset = /** @type {HTMLButtonElement} */ ($('#btn-reset-settings'));
     const overlay = settingsModal.querySelector('.modal-overlay');
 
     const closeModal = () => settingsModal.classList.add('hidden');
@@ -791,6 +1001,41 @@ function setupSettings() {
     btnClose?.addEventListener('click', closeModal);
     btnCancel?.addEventListener('click', closeModal);
     overlay?.addEventListener('click', closeModal);
+
+    btnReset?.addEventListener('click', async () => {
+        const confirmed = confirm(
+            '⚠️ 恢复初始设置将：\n' +
+            '\n' +
+            '• 清除所有 API Key 与 Base URL\n' +
+            '• 清除 4Router 登录状态\n' +
+            '• 重置主题、字体、模型、effort 等所有偏好\n' +
+            '• 关闭当前所有运行中的工具/终端\n' +
+            '• 返回欢迎页面\n' +
+            '\n' +
+            '此操作不可撤销，确定继续吗？'
+        );
+        if (!confirmed) return;
+
+        btnReset.disabled = true;
+        const origText = btnReset.textContent;
+        btnReset.textContent = '正在重置...';
+        try {
+            const result = await api.app.resetAll();
+            if (!result?.success) {
+                alert(`重置失败: ${result?.error || '未知错误'}`);
+                btnReset.disabled = false;
+                btnReset.textContent = origText;
+                return;
+            }
+            // Reload the renderer — init() will see firstLaunch=true and show
+            // the welcome screen with no API keys configured.
+            window.location.reload();
+        } catch (err) {
+            alert(`重置失败: ${err}`);
+            btnReset.disabled = false;
+            btnReset.textContent = origText;
+        }
+    });
 
     btnSave?.addEventListener('click', async () => {
         const anthropicKey = /** @type {HTMLInputElement} */ ($('#settings-key-anthropic'))?.value?.trim();

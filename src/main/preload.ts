@@ -69,11 +69,12 @@ contextBridge.exposeInMainWorld('routerAi', {
         },
         checkRemoteConfig: () => ipcRenderer.invoke('app:check-remote-config'),
         applyRemoteConfig: (config: Record<string, any>) => ipcRenderer.invoke('app:apply-remote-config', config),
+        resetAll: () => ipcRenderer.invoke('app:reset-all'),
     },
 
     // ===== Аuth =====
     auth: {
-        loginWebView: () => ipcRenderer.invoke('auth:login-webview'),
+        checkLoginStatus: () => ipcRenderer.invoke('auth:check-login-status'),
         isLoggedIn: () => ipcRenderer.invoke('auth:is-logged-in'),
         logout: () => ipcRenderer.invoke('auth:logout'),
     },

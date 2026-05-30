@@ -44,12 +44,16 @@ function createWindow(): void {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: false, // Required for node-pty IPC
+            webviewTag: true, // Embedded 4Router login uses <webview>
         },
         icon: path.join(__dirname, '..', '..', 'resources', 'icon.ico'),
     });
 
-    // Load renderer
-    if (process.env.NODE_ENV === 'development') {
+    // Load renderer — dev mode loads the Vite server (HMR). Enable it with
+    // `npm run start:dev` (passes --dev) or by setting NODE_ENV=development;
+    // otherwise the built bundle in dist/renderer is loaded.
+    const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+    if (isDev) {
         mainWindow.loadURL('http://localhost:5173');
         mainWindow.webContents.openDevTools({ mode: 'detach' });
     } else {
@@ -179,6 +183,20 @@ function setupIPC(): void {
         return appUpdater.downloadUpdate(downloadUrl);
     });
 
+    // ===== Reset to defaults =====
+    // Wipes API keys, base URLs, models, preferences AND the 4Router auth
+    // session, then asks the renderer to reload back to the welcome screen.
+    ipcMain.handle('app:reset-all', async () => {
+        try {
+            ptyManager.destroyAll();
+            await authManager.clearSession();
+            configStore.resetAll();
+            return { success: true };
+        } catch (err: any) {
+            return { success: false, error: String(err?.message || err) };
+        }
+    });
+
     // ===== Remote Config Sync =====
     ipcMain.handle('app:check-remote-config', async () => {
         return appUpdater.checkRemoteConfig();
@@ -190,9 +208,11 @@ function setupIPC(): void {
     });
 
     // ===== Auth (Module 1) =====
-    ipcMain.handle('auth:login-webview', async () => {
-        if (!mainWindow) return { success: false, error: '窗口未就绪' };
-        return authManager.loginViaWebView(mainWindow);
+    // Renderer drives login via an in-page <webview>; this handler polls the
+    // shared `auth-4router` session to detect a logged-in cookie state and
+    // mint an accessToken.
+    ipcMain.handle('auth:check-login-status', async () => {
+        return authManager.checkLoginStatus();
     });
 
     ipcMain.handle('auth:is-logged-in', () => {

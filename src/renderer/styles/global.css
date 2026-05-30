@@ -522,6 +522,32 @@ input {
     color: var(--text-primary);
 }
 
+.btn-danger {
+    padding: 10px 22px;
+    background: transparent;
+    border: 1px solid #d96238;
+    border-radius: var(--radius-md);
+    color: #d96238;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.btn-danger:hover {
+    background: #d96238;
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(217, 98, 56, 0.35);
+}
+
+.btn-danger:active {
+    transform: translateY(1px);
+}
+
+.btn-danger:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .btn-icon {
     width: 32px;
     height: 32px;
@@ -701,10 +727,6 @@ input {
     box-shadow: 0 0 0 3px rgba(155, 207, 121, 0.08), var(--shadow-md);
 }
 
-[data-theme="fruit"] .tab.active::after {
-    background: var(--gradient-primary);
-}
-
 [data-theme="fruit"] .tool-icon {
     filter: saturate(1.08);
 }
@@ -783,6 +805,147 @@ input {
     font-size: 12px;
 }
 
+/* ===== Working Directory List ===== */
+.sidebar-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.sidebar-section-header .sidebar-title {
+    margin-bottom: 0;
+}
+
+.btn-add-cwd {
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    line-height: 1;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    flex-shrink: 0;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.btn-add-cwd:hover {
+    color: var(--text-primary);
+    background: var(--border-default);
+}
+
+.cwd-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cwd-list-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 6px 8px;
+}
+
+.cwd-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.cwd-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.cwd-item.selected {
+    background: color-mix(in srgb, var(--accent-blue) 14%, var(--bg-tertiary));
+    color: var(--text-primary);
+    box-shadow: inset 2px 0 0 var(--accent-blue);
+}
+
+.cwd-item-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.cwd-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    font-size: 12px;
+}
+
+/* Parent path: de-emphasized and the part that truncates when space is tight. */
+.cwd-item-parent {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.6;
+}
+
+/* Leaf (last segment): never shrinks, so it's always shown in full. */
+.cwd-item-leaf {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.cwd-remove {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-muted);
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.cwd-item:hover .cwd-remove {
+    opacity: 0.6;
+}
+
+.cwd-remove:hover {
+    opacity: 1 !important;
+    color: var(--accent-red);
+    background: var(--bg-primary);
+}
+
+/* Tabs sharing the selected directory with the active tab — a subtle accent
+   tint that stays clearly secondary to the dominant .active tab. */
+.tab.dir-linked:not(.active) {
+    background: color-mix(in srgb, var(--accent-blue) 16%, var(--bg-secondary));
+    color: var(--text-primary);
+}
+
+.tab.dir-linked:not(.active):hover {
+    background: color-mix(in srgb, var(--accent-blue) 24%, var(--bg-secondary));
+}
+
+/* The active tab within a linked group: same accent family as its siblings but
+   the strongest member, so it clearly reads as active (plus its gradient
+   underbar). Scoped to .dir-linked so a solo active tab keeps its normal look. */
+.tab.dir-linked.active {
+    background: color-mix(in srgb, var(--accent-blue) 34%, var(--bg-primary));
+    color: var(--text-primary);
+}
+
 .sidebar-bottom {
     margin-top: auto;
     padding: 0 12px;
@@ -840,17 +1003,9 @@ input {
 .tab.active {
     background: var(--bg-primary);
     color: var(--text-primary);
-}
-
-.tab.active::after {
-    content: '';
-    position: absolute;
-    bottom: -1px;
-    left: 8px;
-    right: 8px;
-    height: 2px;
-    background: var(--gradient-primary);
-    border-radius: 1px;
+    /* Bottom accent edge that hugs the tab's rounded corners (matches the
+       selected working-directory item, but on the bottom side). */
+    box-shadow: inset 0 -2px 0 var(--accent-blue);
 }
 
 .tab-close {
@@ -990,6 +1145,80 @@ input {
     justify-content: flex-end;
     padding: 12px 20px;
     border-top: 1px solid var(--border-muted);
+}
+
+/* ===== 4Router Embedded Login Modal ===== */
+.auth-modal .auth-modal-content {
+    width: min(90vw, 1200px);
+    height: 85vh;
+    max-height: 85vh;
+    padding: 0;
+}
+
+.auth-modal-status {
+    margin-left: auto;
+    margin-right: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.auth-modal-body {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    background: #ffffff;
+}
+
+#auth-webview {
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+
+/* ===== Toast ===== */
+.toast-host {
+    position: fixed;
+    top: calc(var(--titlebar-height) + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.toast {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    box-shadow: var(--shadow-lg);
+    padding: 8px 16px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    line-height: 1.4;
+    max-width: 80vw;
+    opacity: 0;
+    transform: translateY(-8px);
+    transition: opacity var(--transition-normal), transform var(--transition-normal);
+}
+
+.toast.toast-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast.toast-success {
+    border-color: rgba(63, 185, 80, 0.4);
+    color: var(--accent-green);
+}
+
+.toast.toast-error {
+    border-color: rgba(248, 81, 73, 0.4);
+    color: var(--accent-red);
 }
 
 /* Settings Groups */

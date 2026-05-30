@@ -158,11 +158,13 @@
       </div>
 
       <div class="sidebar-section">
-        <h4 class="sidebar-title">工作目录</h4>
-        <button id="btn-select-cwd" class="sidebar-action-btn">
-          <span>📁</span>
-          <span id="cwd-display" class="cwd-text">选择目录...</span>
-        </button>
+        <div class="sidebar-section-header">
+          <h4 class="sidebar-title">工作目录</h4>
+          <button id="btn-add-cwd" class="btn-add-cwd" title="添加工作目录">+</button>
+        </div>
+        <div id="cwd-list" class="cwd-list">
+          <div id="cwd-list-empty" class="cwd-list-empty">点击 + 添加工作目录</div>
+        </div>
       </div>
 
       <div class="sidebar-bottom">
@@ -322,6 +324,7 @@
         </div>
       </div>
       <div class="modal-footer">
+        <button id="btn-reset-settings" class="btn-danger" style="margin-right:auto;" title="清除所有 Key、登录与偏好，返回欢迎页">恢复初始设置</button>
         <button id="btn-save-settings" class="btn-primary">保存</button>
         <button id="btn-cancel-settings" class="btn-secondary">取消</button>
       </div>
@@ -346,6 +349,24 @@
       </div>
     </div>
   </div>
+
+  <!-- 4Router Embedded Login Modal -->
+  <div id="auth-login-modal" class="modal hidden auth-modal">
+    <div class="modal-overlay"></div>
+    <div class="modal-content auth-modal-content">
+      <div class="modal-header">
+        <h2>登录 4Router</h2>
+        <span id="auth-modal-status" class="auth-modal-status">等待登录…</span>
+        <button id="btn-close-auth-modal" class="btn-icon" title="关闭">&times;</button>
+      </div>
+      <div class="auth-modal-body">
+        <webview id="auth-webview" partition="auth-4router" src="about:blank" allowpopups></webview>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast host (top-center notifications) -->
+  <div id="toast-host" class="toast-host"></div>
 
   <script type="module" src="./app.js"></script>
 </body>
