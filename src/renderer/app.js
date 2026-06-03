@@ -17,7 +17,16 @@ const state = {
     currentCwd: '',
     workdirs: /** @type {string[]} */ ([]),
     tabCounter: 0,
+    /** Cached `tools.list()` result, used to label mirrored sessions. */
+    toolsMeta: /** @type {any[]|null} */ (null),
 };
+
+// ===== Shared-session mirroring =====
+// Sessions live in the main process and are shared across every client (this
+// window + any remote browser). Live pty output that arrives before a tab is
+// ready (during scrollback replay) is parked here, keyed by sessionId, each
+// chunk tagged with its cumulative end offset so replay can dedupe the overlap.
+const pendingData = /** @type {Map<string, {end:number, data:string}[]>} */ (new Map());
 
 /**
  * @typedef {Object} TabState
@@ -31,6 +40,7 @@ const state = {
  * @property {HTMLElement} wrapper
  * @property {HTMLElement} tabElement
  * @property {string} cwd
+ * @property {boolean} ready — false while scrollback is being replayed
  */
 
 // ===== DOM References =====
@@ -68,11 +78,104 @@ function refitTerminal(/** @type {TabState} */ tab, /** @type {{ focus?: boolean
     }
 }
 
+// Set once the terminal web font has loaded and terminals have been re-measured.
+let webFontReady = false;
+
+/**
+ * Force xterm to re-measure its character cell size, then refit + nudge the PTY.
+ *
+ * The FIRST terminal opened before the web font (JetBrains Mono) finishes
+ * loading measures its cell against the fallback font and caches a wrong size;
+ * fit() reuses that cache, so the cols/rows sent to the PTY are wrong and the
+ * CLI's TUI renders garbled. A tab switch happens to fix it (showing a hidden
+ * terminal makes xterm re-measure), so we reproduce that explicitly: changing
+ * fontSize forces charSizeService.measure() with the now-loaded font, then we
+ * refit and briefly bump the PTY size so a full-screen TUI repaints at the
+ * corrected width.
+ * @param {TabState} tab
+ */
+function remeasureTerminal(tab) {
+    if (!state.tabs.includes(tab) || tab.wrapper.classList.contains('hidden')) return;
+    const term = tab.terminal;
+    const w = tab.wrapper;
+
+    // 1) A genuine fontSize change forces charSizeService.measure() with the
+    //    now-loaded font (assigning the same value is a no-op).
+    const fs = term.options.fontSize;
+    term.options.fontSize = fs + 0.01;
+    term.options.fontSize = fs;
+
+    // 2) Reproduce a real tab switch: hide for one frame, then show + refit, so
+    //    xterm's ResizeObserver re-measures the cell (this is the exact path a
+    //    manual tab switch takes, which is known to fix the layout).
+    w.classList.add('hidden');
+    requestAnimationFrame(() => {
+        if (!state.tabs.includes(tab)) return;
+        w.classList.remove('hidden');
+        requestAnimationFrame(() => {
+            if (!state.tabs.includes(tab) || w.classList.contains('hidden')) return;
+            tab.fitAddon.fit();
+            const cols = term.cols, rows = term.rows;
+            // Bump the PTY size then restore so a full-screen TUI gets a real
+            // resize event and repaints at the corrected width.
+            api.pty.resize(tab.sessionId, cols + 1, rows);
+            requestAnimationFrame(() => {
+                if (state.tabs.includes(tab)) api.pty.resize(tab.sessionId, cols, rows);
+            });
+        });
+    });
+}
+
+/**
+ * Force the current TUI to redraw at the correct geometry. A plain refit is
+ * often not enough: full-screen TUIs (Claude Code / Codex) only repaint when
+ * they receive a size *change*, so after the window is resized they can be left
+ * with a broken layout even though xterm itself is already the right size. We
+ * refit to the true dimensions, repaint xterm's own viewport, then nudge the
+ * PTY by one column/row and immediately restore it so the child always gets a
+ * genuine resize event (SIGWINCH) and performs a full redraw at the new width.
+ *
+ * This is non-destructive: it only nudges the app to repaint its *live* UI and
+ * never clears the buffer. Text the CLI already hard-wrapped into the scrollback
+ * at a narrower width cannot be reflowed (the original wide text is gone) and
+ * these CLIs never reprint scrolled-off output, so those old lines stay as-is.
+ * Clearing them was tried and only made the content vanish — worse, not better.
+ * @param {TabState} tab
+ */
+function refreshTerminal(/** @type {TabState} */ tab) {
+    if (!state.tabs.includes(tab) || tab.wrapper.classList.contains('hidden')) return;
+
+    // Recompute the correct cols/rows for the current container size.
+    tab.fitAddon.fit();
+    const cols = tab.terminal.cols;
+    const rows = tab.terminal.rows;
+
+    // Repaint xterm's render layer in case it drifted out of sync. We do NOT
+    // clear the buffer: clearing made committed history vanish (these CLIs never
+    // reprint scrolled-off output), so keep everything and just redraw.
+    tab.terminal.refresh(0, rows - 1);
+
+    // Force the child to re-layout: a resize to the size it already has is a
+    // no-op, so briefly report a size one column/row larger, then restore on
+    // the next frame (the intermediate size is never painted). Nudging
+    // *columns* — not just rows — is what makes a width-broken TUI reflow its
+    // live UI back to the full width.
+    api.pty.resize(tab.sessionId, cols + 1, rows + 1);
+    requestAnimationFrame(() => {
+        if (!state.tabs.includes(tab)) return;
+        api.pty.resize(tab.sessionId, cols, rows);
+        tab.terminal.scrollToBottom();
+        tab.terminal.focus();
+    });
+}
+
 // ===== Initialization =====
 async function init() {
     setupWindowControls();
     setupToggleVisibility();
     await checkFirstLaunch();
+    // Prime the tools list so mirrored tabs can be labelled synchronously.
+    try { state.toolsMeta = await api.tools.list(); } catch { /* ignore */ }
     await applyTheme();
     setupWelcomeScreen();
     setupSidebar();
@@ -80,6 +183,8 @@ async function init() {
     setupAuthModal();
     setupPtyListeners();
     setupResize();
+    setupMobile();
+    setupFontReady();
     setupFileExplorer();
     checkRemoteConfigOnStartup();
 }
@@ -196,9 +301,16 @@ function showWelcomeScreen() {
     appScreen.classList.add('hidden');
 }
 
+let sessionsSynced = false;
 function showAppScreen() {
     welcomeScreen.classList.add('hidden');
     appScreen.classList.remove('hidden');
+    // Mirror any sessions already running in the main process (created by this
+    // app earlier or by another connected client). Runs once per load.
+    if (!sessionsSynced) {
+        sessionsSynced = true;
+        void syncSessions();
+    }
 }
 
 function shortenPath(/** @type {string} */ p) {
@@ -719,8 +831,12 @@ async function launchTool(/** @type {string} */ toolId) {
     }
 
     try {
-        const sessionId = await api.pty.create(toolId, state.currentCwd || undefined);
-        createTab(toolId, tool.name, tool.icon, sessionId);
+        const cwd = state.currentCwd || '';
+        const sessionId = await api.pty.create(toolId, cwd || undefined);
+        // The tab may already exist via the pty:created broadcast; ensureTab is
+        // idempotent. Then focus it (the user explicitly launched this one).
+        ensureTab({ sessionId, toolId, cwd }, /*replay*/ false, /*activate*/ true);
+        activateBySession(sessionId);
 
         const badgeEl = toolId === 'claude-code'
             ? document.getElementById('badge-claude')
@@ -738,8 +854,10 @@ async function launchTool(/** @type {string} */ toolId) {
 // ===== Launch Terminal =====
 async function launchTerminal() {
     try {
-        const sessionId = await api.pty.create('terminal', state.currentCwd || undefined);
-        createTab('terminal', 'Terminal', '⬛', sessionId);
+        const cwd = state.currentCwd || '';
+        const sessionId = await api.pty.create('terminal', cwd || undefined);
+        ensureTab({ sessionId, toolId: 'terminal', cwd }, /*replay*/ false, /*activate*/ true);
+        activateBySession(sessionId);
     } catch (err) {
         console.error('Failed to launch terminal:', err);
         alert(`启动终端失败: ${err}`);
@@ -789,7 +907,9 @@ function createTab(
   /** @type {string} */ toolId,
   /** @type {string} */ toolName,
   /** @type {string} */ toolIcon,
-  /** @type {string} */ sessionId
+  /** @type {string} */ sessionId,
+  /** @type {string} */ cwd = state.currentCwd || '',
+  /** @type {boolean} */ activate = true
 ) {
     const tabId = `tab-${++state.tabCounter}`;
     const themeName = document.documentElement.getAttribute('data-theme') || 'dark';
@@ -820,6 +940,7 @@ function createTab(
     toolbar.innerHTML = `
         <button class="toolbar-btn" data-action="copy" title="Copy">📋 Copy</button>
         <button class="toolbar-btn" data-action="paste" title="Paste">📥 Paste</button>
+        <button class="toolbar-btn" data-action="refresh" title="重绘 TUI（修复窗口缩放后当前界面的排版错位，不清空历史）">🔄 刷新</button>
     `;
     wrapper.appendChild(toolbar);
 
@@ -838,6 +959,10 @@ function createTab(
         } else if (action === 'paste') {
             await pasteFromClipboard(sessionId);
             terminal.focus();
+        } else if (action === 'refresh') {
+            refreshTerminal(tabState);
+            btn.textContent = '✅ 已刷新';
+            setTimeout(() => { btn.textContent = '🔄 刷新'; }, 1000);
         }
     });
 
@@ -845,6 +970,13 @@ function createTab(
     terminal.onSelectionChange(() => {
         const sel = terminal.getSelection();
         toolbar.classList.toggle('has-selection', !!sel);
+    });
+
+    // Tap-to-focus: on touch devices, tapping the terminal must focus xterm's
+    // hidden textarea to summon the on-screen keyboard.
+    wrapper.addEventListener('click', (e) => {
+        if (/** @type {HTMLElement} */ (e.target)?.closest('.terminal-toolbar')) return;
+        terminal.focus();
     });
 
     // ---- Keyboard interception ----
@@ -902,14 +1034,99 @@ function createTab(
         fitAddon,
         wrapper,
         tabElement: tabEl,
-        cwd: state.currentCwd || '',
+        cwd: cwd || '',
+        ready: false,
     };
     state.tabs.push(tabState);
 
-    activateTab(tabId);
-    refitTerminal(tabState);
     tabBarEmpty.classList.add('hidden');
     emptyState.classList.add('hidden');
+
+    // Auto-activate when the user launched this tab, or when it's the only one.
+    // Mirrored tabs from another client are added without stealing focus.
+    if (activate || state.tabs.length === 1) {
+        activateTab(tabId);
+        refitTerminal(tabState);
+    } else {
+        wrapper.classList.add('hidden');
+    }
+
+    return tabState;
+}
+
+// ===== Shared-session helpers =====
+
+/** Resolve display name/icon for a session's tool from the cached tools list. */
+function resolveToolMeta(/** @type {string} */ toolId) {
+    if (toolId === 'terminal') return { name: 'Terminal', icon: '⬛' };
+    const t = (state.toolsMeta || []).find((m) => m.id === toolId);
+    return { name: (t && t.name) || toolId, icon: (t && t.icon) || '⬛' };
+}
+
+/**
+ * Flush parked live output into a freshly-attached tab.
+ * @param {TabState} tab
+ * @param {number|null} threshold offset already covered by replayed scrollback;
+ *   chunks at/below it are dropped, a straddling chunk is sliced. null = write all.
+ */
+function flushPending(/** @type {TabState} */ tab, /** @type {number|null} */ threshold) {
+    const q = pendingData.get(tab.sessionId);
+    if (!q) return;
+    for (const chunk of q) {
+        if (threshold == null) { tab.terminal.write(chunk.data); continue; }
+        const start = chunk.end - chunk.data.length;
+        if (chunk.end <= threshold) continue;          // fully inside replayed buffer
+        if (start >= threshold) tab.terminal.write(chunk.data);
+        else tab.terminal.write(chunk.data.slice(threshold - start)); // partial overlap
+    }
+    pendingData.delete(tab.sessionId);
+}
+
+/**
+ * Make sure a tab exists for a shared session, creating it if needed.
+ * @param {{sessionId:string, toolId:string, cwd?:string}} session
+ * @param {boolean} replay  fetch & write the session's existing scrollback
+ * @param {boolean} activate  focus the new tab
+ */
+function ensureTab(session, replay, activate) {
+    if (state.tabs.some((t) => t.sessionId === session.sessionId)) return;
+    const meta = resolveToolMeta(session.toolId);
+    const tab = createTab(session.toolId, meta.name, meta.icon, session.sessionId, session.cwd || '', activate);
+
+    if (replay) {
+        api.pty.attach(session.sessionId).then((buf) => {
+            const data = (buf && buf.data) || '';
+            const endOffset = (buf && buf.endOffset) || 0;
+            if (data) tab.terminal.write(data);
+            flushPending(tab, endOffset);
+            tab.ready = true;
+            if (tab.id === state.activeTabId) refreshTerminal(tab);
+        }).catch(() => {
+            flushPending(tab, null);
+            tab.ready = true;
+        });
+    } else {
+        flushPending(tab, null);
+        tab.ready = true;
+    }
+}
+
+/** Activate the tab bound to a session id, if present. */
+function activateBySession(/** @type {string} */ sessionId) {
+    const tab = state.tabs.find((t) => t.sessionId === sessionId);
+    if (tab) activateTab(tab.id);
+}
+
+/** Reconcile local tabs with the main process's live session list (mirroring). */
+async function syncSessions() {
+    try {
+        if (!state.toolsMeta) state.toolsMeta = await api.tools.list();
+        const sessions = await api.pty.list();
+        for (const s of sessions) ensureTab(s, /*replay*/ true, /*activate*/ false);
+        if (!state.activeTabId && state.tabs.length) activateTab(state.tabs[0].id);
+    } catch (err) {
+        console.error('[syncSessions] failed:', err);
+    }
 }
 
 function activateTab(/** @type {string} */ tabId) {
@@ -932,16 +1149,18 @@ function activateTab(/** @type {string} */ tabId) {
     syncDirLinkage();
 }
 
-function closeTab(/** @type {string} */ tabId) {
+/** Remove a tab from THIS client's UI only (no pty kill). Shared by the user
+ *  close path and the pty:closed mirror handler. */
+function removeTab(/** @type {string} */ tabId) {
     const idx = state.tabs.findIndex(t => t.id === tabId);
     if (idx === -1) return;
 
     const tab = state.tabs[idx];
-    api.pty.destroy(tab.sessionId);
     tab.terminal.dispose();
     tab.wrapper.remove();
     tab.tabElement.remove();
     state.tabs.splice(idx, 1);
+    pendingData.delete(tab.sessionId);
 
     if (state.tabs.length === 0) {
         state.activeTabId = null;
@@ -955,13 +1174,38 @@ function closeTab(/** @type {string} */ tabId) {
     }
 }
 
+function closeTab(/** @type {string} */ tabId) {
+    const tab = state.tabs.find(t => t.id === tabId);
+    if (!tab) return;
+    // Destroy the shared pty; the main process broadcasts pty:closed so every
+    // other client drops its mirrored tab too.
+    api.pty.destroy(tab.sessionId);
+    removeTab(tabId);
+}
+
 // ===== PTY Listeners =====
 function setupPtyListeners() {
-    api.pty.onData((/** @type {string} */ sessionId, /** @type {string} */ data) => {
+    api.pty.onData((/** @type {string} */ sessionId, /** @type {string} */ data, /** @type {number} */ endOffset) => {
         const tab = state.tabs.find(t => t.sessionId === sessionId);
-        if (tab) {
+        if (tab && tab.ready) {
             tab.terminal.write(data);
+        } else {
+            // Tab not created/ready yet (mirrored session mid-replay): park it.
+            const arr = pendingData.get(sessionId) || [];
+            arr.push({ end: endOffset || 0, data });
+            pendingData.set(sessionId, arr);
         }
+    });
+
+    // Another client (or this one) created a session → mirror it as a tab.
+    api.pty.onCreated((/** @type {{sessionId:string,toolId:string,cwd:string}} */ session) => {
+        ensureTab(session, /*replay*/ true, /*activate*/ false);
+    });
+
+    // A session was deliberately closed somewhere → drop the mirrored tab here.
+    api.pty.onClosed((/** @type {string} */ sessionId) => {
+        const tab = state.tabs.find(t => t.sessionId === sessionId);
+        if (tab) removeTab(tab.id);
     });
 
     api.pty.onExit((/** @type {string} */ sessionId, /** @type {number} */ exitCode) => {
@@ -971,6 +1215,92 @@ function setupPtyListeners() {
         }
         refreshToolStatus();
     });
+}
+
+// ===== Web font readiness =====
+// When the terminal web font loads after a terminal was already opened, the
+// active terminal's cached cell size is stale — re-measure it so its layout
+// (and the CLI's TUI) corrects without needing a manual tab switch.
+function setupFontReady() {
+    if (webFontReady || !document.fonts?.load) return;
+    Promise.resolve(document.fonts.load('14px "JetBrains Mono"'))
+        .catch(() => { })
+        .then(() => document.fonts.ready)
+        .then(() => {
+            webFontReady = true;
+            const active = state.tabs.find(t => t.id === state.activeTabId);
+            if (active) remeasureTerminal(active);
+        })
+        .catch(() => { /* ignore */ });
+}
+
+// ===== Mobile / touch adaptation =====
+function setupMobile() {
+    const menuBtn = $('#btn-menu');
+    const backdrop = $('#sidebar-backdrop');
+    const sidebar = $('#sidebar');
+    const closeSidebar = () => document.body.classList.remove('sidebar-open');
+
+    menuBtn?.addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
+    backdrop?.addEventListener('click', closeSidebar);
+    // Launching a tool / picking a workdir from the drawer closes it.
+    sidebar?.addEventListener('click', (e) => {
+        if (/** @type {HTMLElement} */ (e.target)?.closest('.tool-launch-btn, .cwd-item')) {
+            closeSidebar();
+        }
+    });
+
+    // ---- Floating terminal control panel (Copy/Paste/Refresh + Esc + arrows) ----
+    const ctrlToggle = $('#mobile-ctrl-toggle');
+    const ctrlPanel = $('#mobile-ctrl-panel');
+    const getActiveTab = () => state.tabs.find(t => t.id === state.activeTabId);
+    // ANSI sequences for the special keys.
+    const KEY_SEQ = { esc: '\x1b', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D' };
+
+    ctrlToggle?.addEventListener('click', () => {
+        const open = ctrlPanel?.classList.toggle('open');
+        ctrlToggle.classList.toggle('active', !!open);
+    });
+
+    ctrlPanel?.addEventListener('click', async (e) => {
+        const btn = /** @type {HTMLElement} */ (e.target)?.closest('[data-mc]');
+        if (!btn) return;
+        const action = btn.getAttribute('data-mc');
+        const tab = getActiveTab();
+        if (!tab) return;
+
+        if (action === 'copy') {
+            const sel = tab.terminal.getSelection();
+            if (sel) { await navigator.clipboard.writeText(sel).catch(() => { }); tab.terminal.clearSelection(); }
+        } else if (action === 'paste') {
+            await pasteFromClipboard(tab.sessionId);
+        } else if (action === 'refresh') {
+            refreshTerminal(tab);
+        } else if (action && KEY_SEQ[action]) {
+            api.pty.write(tab.sessionId, KEY_SEQ[action]);
+        }
+        // Keep the soft keyboard up so arrow/esc taps don't dismiss it.
+        tab.terminal.focus();
+    });
+
+    // The on-screen keyboard shrinks the visual viewport. Mirror its height into
+    // --app-vh (consumed by the mobile CSS) so the terminal stays above the
+    // keyboard, then refit the active terminal to the new size. Web only — the
+    // desktop window has no soft keyboard and uses the normal resize path.
+    const vv = window.visualViewport;
+    if (vv && document.documentElement.classList.contains('web-mode')) {
+        const apply = () => {
+            document.documentElement.style.setProperty('--app-vh', vv.height + 'px');
+            // Height the keyboard covers, so the control FAB/panel float above it.
+            const kbInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+            document.documentElement.style.setProperty('--kb-inset', kbInset + 'px');
+            const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+            if (activeTab) refitTerminal(activeTab);
+        };
+        vv.addEventListener('resize', apply);
+        vv.addEventListener('scroll', apply);
+        apply();
+    }
 }
 
 // ===== Resize Handling =====
@@ -1074,8 +1404,46 @@ function setupSettings() {
         await api.config.set('theme', theme);
         applyTheme(theme);
 
+        // Remote web access — persist + (re)start/stop the bridge.
+        await applyWebSettings();
+
         closeModal();
     });
+
+    // Toggling the enable / LAN switches applies immediately so the access URLs
+    // appear (or clear) without closing the panel.
+    $('#settings-web-enabled')?.addEventListener('change', () => { void applyWebSettings(); });
+    $('#settings-web-lan')?.addEventListener('change', () => { void applyWebSettings(); });
+}
+
+/** Render the list of reachable URLs (or a hint) into the settings panel. */
+function renderWebUrls(/** @type {any} */ status) {
+    const box = $('#settings-web-urls');
+    if (!box) return;
+    if (!status || !status.running || !status.urls?.length) {
+        box.textContent = status?.enabled ? '启动失败，请检查端口是否被占用' : '未启用';
+        return;
+    }
+    box.innerHTML = status.urls
+        .map((/** @type {string} */ u) => `<div>${u.replace(/</g, '&lt;')}</div>`)
+        .join('');
+}
+
+/** Read the web inputs, apply them in the main process, refresh the URL list. */
+async function applyWebSettings() {
+    if (!api.web) return;
+    const cfg = {
+        enabled: /** @type {HTMLInputElement} */ ($('#settings-web-enabled'))?.checked || false,
+        port: parseInt(/** @type {HTMLInputElement} */($('#settings-web-port'))?.value || '4178', 10) || 4178,
+        allowLan: /** @type {HTMLInputElement} */ ($('#settings-web-lan'))?.checked || false,
+        token: /** @type {HTMLInputElement} */ ($('#settings-web-token'))?.value?.trim() || '',
+    };
+    try {
+        const status = await api.web.apply(cfg);
+        renderWebUrls(status);
+    } catch (err) {
+        console.error('[applyWebSettings] failed:', err);
+    }
 }
 
 async function openSettings() {
@@ -1140,6 +1508,24 @@ async function openSettings() {
     const storedOpenaiKey = await api.config.getApiKey('openai');
     if (anthropicInput) anthropicInput.value = storedAnthropicKey || '';
     if (openaiInput) openaiInput.value = storedOpenaiKey || '';
+
+    // Load remote web access status + config.
+    if (api.web) {
+        try {
+            const web = await api.web.getStatus();
+            const en = /** @type {HTMLInputElement} */ ($('#settings-web-enabled'));
+            const port = /** @type {HTMLInputElement} */ ($('#settings-web-port'));
+            const lan = /** @type {HTMLInputElement} */ ($('#settings-web-lan'));
+            const token = /** @type {HTMLInputElement} */ ($('#settings-web-token'));
+            if (en) en.checked = !!web.enabled;
+            if (port) port.value = String(web.port || 4178);
+            if (lan) lan.checked = !!web.allowLan;
+            if (token) token.value = web.token || '';
+            renderWebUrls(web);
+        } catch (err) {
+            console.error('[openSettings] web status failed:', err);
+        }
+    }
 
     settingsModal.classList.remove('hidden');
 

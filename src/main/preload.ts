@@ -18,8 +18,12 @@ contextBridge.exposeInMainWorld('routerAi', {
         resize: (sessionId: string, cols: number, rows: number) =>
             ipcRenderer.send('pty:resize', sessionId, cols, rows),
         destroy: (sessionId: string) => ipcRenderer.invoke('pty:destroy', sessionId),
-        onData: (callback: (sessionId: string, data: string) => void) => {
-            const listener = (_event: any, sessionId: string, data: string) => callback(sessionId, data);
+        // Shared-session sync.
+        list: () => ipcRenderer.invoke('pty:list'),
+        attach: (sessionId: string) => ipcRenderer.invoke('pty:attach', sessionId),
+        onData: (callback: (sessionId: string, data: string, endOffset: number) => void) => {
+            const listener = (_event: any, sessionId: string, data: string, endOffset: number) =>
+                callback(sessionId, data, endOffset);
             ipcRenderer.on('pty:data', listener);
             return () => ipcRenderer.removeListener('pty:data', listener);
         },
@@ -28,6 +32,17 @@ contextBridge.exposeInMainWorld('routerAi', {
                 callback(sessionId, exitCode);
             ipcRenderer.on('pty:exit', listener);
             return () => ipcRenderer.removeListener('pty:exit', listener);
+        },
+        onCreated: (callback: (session: { sessionId: string; toolId: string; cwd: string }) => void) => {
+            const listener = (_event: any, session: { sessionId: string; toolId: string; cwd: string }) =>
+                callback(session);
+            ipcRenderer.on('pty:created', listener);
+            return () => ipcRenderer.removeListener('pty:created', listener);
+        },
+        onClosed: (callback: (sessionId: string) => void) => {
+            const listener = (_event: any, sessionId: string) => callback(sessionId);
+            ipcRenderer.on('pty:closed', listener);
+            return () => ipcRenderer.removeListener('pty:closed', listener);
         },
     },
 
@@ -45,6 +60,13 @@ contextBridge.exposeInMainWorld('routerAi', {
         getModel: (provider: string) => ipcRenderer.invoke('config:get-model', provider),
         setModel: (provider: string, model: string) =>
             ipcRenderer.invoke('config:set-model', provider, model),
+    },
+
+    // ===== Remote Web Access =====
+    web: {
+        getStatus: () => ipcRenderer.invoke('web:get-status'),
+        apply: (cfg: { enabled: boolean; port: number; allowLan: boolean; token: string }) =>
+            ipcRenderer.invoke('web:apply', cfg),
     },
 
     // ===== Window Controls =====

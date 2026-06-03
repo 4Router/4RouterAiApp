@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self';">
+    content="default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self';">
   <title>4RouterAi</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,6 +18,14 @@
 <body>
   <!-- Custom Title Bar -->
   <header id="titlebar">
+    <!-- Mobile-only drawer toggle (hidden on desktop via CSS) -->
+    <button id="btn-menu" class="titlebar-menu-btn" title="菜单" aria-label="菜单">
+      <svg width="18" height="18" viewBox="0 0 18 18">
+        <rect y="2" width="18" height="2" rx="1" fill="currentColor" />
+        <rect y="8" width="18" height="2" rx="1" fill="currentColor" />
+        <rect y="14" width="18" height="2" rx="1" fill="currentColor" />
+      </svg>
+    </button>
     <div class="titlebar-drag">
       <div class="titlebar-logo">
         <img src="./icon.png" class="logo-icon" alt="icon">
@@ -136,6 +144,8 @@
 
   <!-- Main Application Screen -->
   <div id="app-screen" class="screen hidden">
+    <!-- Backdrop behind the mobile sidebar drawer (tap to close) -->
+    <div id="sidebar-backdrop"></div>
     <!-- Sidebar -->
     <aside id="sidebar">
       <div class="sidebar-section">
@@ -205,6 +215,32 @@
       </div>
       <div id="file-tree" class="file-tree"></div>
     </aside>
+
+    <!-- Mobile terminal controls: single floating button toggles a bottom panel
+         with copy/paste/refresh + Esc + arrow keys (acts on the active tab). -->
+    <button id="mobile-ctrl-toggle" class="mobile-ctrl-toggle" aria-label="终端控制">⌨</button>
+    <div id="mobile-ctrl-panel" class="mobile-ctrl-panel">
+      <div class="mcp-row">
+        <button class="mcp-btn" data-mc="copy">📋 复制</button>
+        <button class="mcp-btn" data-mc="paste">📥 粘贴</button>
+        <button class="mcp-btn" data-mc="refresh">🔄 刷新</button>
+        <button class="mcp-btn" data-mc="esc">Esc</button>
+      </div>
+      <div class="mcp-row">
+        <button class="mcp-btn mcp-arrow" data-mc="left" aria-label="左">
+          <svg class="mcp-ico" viewBox="0 0 24 24"><path d="M12 5V19M12 5L6 11M12 5L18 11" /></svg>
+        </button>
+        <button class="mcp-btn mcp-arrow" data-mc="up" aria-label="上">
+          <svg class="mcp-ico" viewBox="0 0 24 24"><path d="M12 5V19M12 5L6 11M12 5L18 11" /></svg>
+        </button>
+        <button class="mcp-btn mcp-arrow" data-mc="down" aria-label="下">
+          <svg class="mcp-ico" viewBox="0 0 24 24"><path d="M12 5V19M12 5L6 11M12 5L18 11" /></svg>
+        </button>
+        <button class="mcp-btn mcp-arrow" data-mc="right" aria-label="右">
+          <svg class="mcp-ico" viewBox="0 0 24 24"><path d="M12 5V19M12 5L6 11M12 5L18 11" /></svg>
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- Settings Modal -->
@@ -282,6 +318,33 @@
           <div class="setting-row">
             <label>HTTP(S) 代理</label>
             <input type="text" id="settings-proxy" class="text-input" placeholder="http://127.0.0.1:7890">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h3>远程访问（Web）</h3>
+          <div class="setting-row">
+            <label>启用远程网页访问</label>
+            <input type="checkbox" id="settings-web-enabled">
+          </div>
+          <div class="setting-row">
+            <label>端口</label>
+            <input type="number" id="settings-web-port" class="text-input small" value="4178" min="1" max="65535">
+          </div>
+          <div class="setting-row">
+            <label>允许局域网访问<br><span style="font-size:11px;color:#8b949e;">关闭仅本机(127.0.0.1)，开启则绑定 0.0.0.0</span></label>
+            <input type="checkbox" id="settings-web-lan">
+          </div>
+          <div class="setting-row">
+            <label>访问令牌 Token（可选）</label>
+            <div class="api-key-input-group">
+              <input type="password" id="settings-web-token" class="api-key-input" placeholder="留空则不校验" autocomplete="off">
+              <button class="btn-toggle-visibility" data-target="settings-web-token">👁</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label>访问地址</label>
+            <div id="settings-web-urls" style="font-size:12px;color:#8b949e;font-family:'JetBrains Mono',monospace;word-break:break-all;line-height:1.7;">未启用</div>
           </div>
         </div>
 
@@ -368,6 +431,9 @@
   <!-- Toast host (top-center notifications) -->
   <div id="toast-host" class="toast-host"></div>
 
+  <!-- In a remote browser this defines window.routerAi over WebSocket before
+       app.js loads. Inside Electron it's a no-op (preload already set it). -->
+  <script src="./web-shim.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 

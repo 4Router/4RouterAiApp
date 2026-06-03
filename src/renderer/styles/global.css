@@ -1432,3 +1432,282 @@ select.text-input {
         --sidebar-width: 180px;
     }
 }
+/* ===== Remote web mode ===== */
+/* Set by web-shim.js when running in a plain browser (no Electron window).
+   The window control buttons drive the host Electron window, so they're
+   useless remotely — hide them and free up the drag region. */
+html.web-mode #titlebar .titlebar-controls {
+    display: none;
+}
+
+/* Hamburger drawer toggle + backdrop are desktop-hidden; the mobile media
+   query below reveals them. */
+.titlebar-menu-btn {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 100%;
+    color: var(--text-secondary);
+    -webkit-app-region: no-drag;
+    flex-shrink: 0;
+}
+
+.titlebar-menu-btn:hover {
+    color: var(--text-primary);
+}
+
+#sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: var(--titlebar-height) 0 0 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 850;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+}
+
+body.sidebar-open #sidebar-backdrop {
+    opacity: 1;
+}
+
+/* ===== Mobile terminal control (FAB + bottom panel) ===== */
+/* Hidden on desktop; the mobile media query flips the toggle to flex.
+   --kb-inset (set by app.js from visualViewport) lifts both above the
+   on-screen keyboard. */
+.mobile-ctrl-toggle {
+    display: none;
+    position: fixed;
+    right: 14px;
+    bottom: calc(var(--kb-inset, 0px) + 14px);
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    box-shadow: var(--shadow-md);
+    z-index: 1100;
+    transition: transform var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mobile-ctrl-toggle:active {
+    transform: scale(0.92);
+}
+
+/* When the panel is open the button reads as "active/close" — drop the loud
+   gradient for a calm tinted chip. */
+.mobile-ctrl-toggle.active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--border-accent);
+}
+
+.mobile-ctrl-panel {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: calc(var(--kb-inset, 0px) + 8px);
+    z-index: 1090;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transform: translateY(calc(100% + 24px));
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+}
+
+/* Little grab-handle for affordance. */
+.mobile-ctrl-panel::before {
+    content: '';
+    width: 32px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-default);
+    margin: 0 auto 2px;
+}
+
+.mcp-row {
+    display: flex;
+    gap: 6px;
+}
+
+.mcp-btn {
+    flex: 1;
+    min-height: 38px;
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-muted);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    user-select: none;
+    transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+
+.mcp-btn:active {
+    background: var(--selection-bg);
+    border-color: var(--border-accent);
+    color: var(--text-primary);
+    transform: scale(0.95);
+}
+
+/* Arrows are SVG (drawn, not glyphs) so all four render identically across
+   devices instead of falling back to different system fonts. One up-arrow
+   icon, rotated per direction. */
+.mcp-ico {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: var(--text-primary);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.mcp-arrow[data-mc="down"] .mcp-ico {
+    transform: rotate(180deg);
+}
+
+.mcp-arrow[data-mc="left"] .mcp-ico {
+    transform: rotate(-90deg);
+}
+
+.mcp-arrow[data-mc="right"] .mcp-ico {
+    transform: rotate(90deg);
+}
+
+/* ===== Mobile / touch layout ===== */
+@media (max-width: 768px) {
+    /* The soft keyboard shrinks the visual viewport; --app-vh is kept in sync
+       by app.js so the terminal stays above the keyboard instead of behind it. */
+    .screen {
+        bottom: auto;
+        height: calc(var(--app-vh, 100vh) - var(--titlebar-height));
+    }
+
+    .titlebar-menu-btn {
+        display: flex;
+    }
+
+    #titlebar {
+        padding-left: 4px;
+    }
+
+    .titlebar-drag {
+        padding-left: 8px;
+    }
+
+    /* Sidebar becomes a slide-in drawer over the content. */
+    #sidebar {
+        position: fixed;
+        top: var(--titlebar-height);
+        bottom: 0;
+        left: 0;
+        width: 80vw;
+        max-width: 300px;
+        z-index: 900;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        box-shadow: var(--shadow-lg);
+        overflow-y: auto;
+    }
+
+    body.sidebar-open #sidebar {
+        transform: translateX(0);
+    }
+
+    #sidebar-backdrop {
+        display: block;
+        pointer-events: none;
+    }
+
+    body.sidebar-open #sidebar-backdrop {
+        pointer-events: auto;
+    }
+
+    /* Terminal takes the whole width; file explorer is out of scope on phones. */
+    .file-explorer {
+        display: none;
+    }
+
+    /* Bigger touch targets for tabs; close button always visible (no hover). */
+    #tab-bar {
+        padding: 0 6px;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .tab {
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+
+    .tab-close {
+        opacity: 0.6;
+        width: 20px;
+        height: 20px;
+        font-size: 16px;
+    }
+
+    /* The per-terminal copy/paste/refresh toolbar is replaced on mobile by the
+       single floating control button + bottom panel (below). */
+    .terminal-toolbar {
+        display: none;
+    }
+
+    .mobile-ctrl-toggle {
+        display: flex;
+    }
+
+    .mobile-ctrl-panel.open {
+        transform: translateY(0);
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    /* Welcome / setup cards stack vertically. */
+    .setup-cards {
+        flex-direction: column;
+    }
+
+    .welcome-container {
+        padding: 24px 16px;
+    }
+
+    .welcome-hero {
+        margin-bottom: 24px;
+    }
+
+    .welcome-hero h1 {
+        font-size: 22px;
+    }
+
+    /* Modals go full-screen so forms are usable on a phone. */
+    .modal-content {
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+        border-radius: 0;
+    }
+
+    .setting-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+    }
+}

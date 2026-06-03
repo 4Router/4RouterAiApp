@@ -17,6 +17,11 @@ interface ConfigSchema {
     ccBypassPermissions: boolean;
     codexBypassPermissions: boolean;
     firstLaunch: boolean;
+    // Remote web access (off by default).
+    webEnabled: boolean;
+    webPort: number;
+    webAllowLan: boolean;
+    webToken: string;
 }
 
 const defaults: ConfigSchema = {
@@ -35,6 +40,10 @@ const defaults: ConfigSchema = {
     ccBypassPermissions: false,
     codexBypassPermissions: false,
     firstLaunch: true,
+    webEnabled: false,
+    webPort: 4178,
+    webAllowLan: false,
+    webToken: '',
 };
 
 export class ConfigStore {

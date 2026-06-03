@@ -1,5 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, safeStorage, shell } from 'electron';
-import * as fs from 'fs';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import * as os from 'os';
 import * as path from 'path';
 import { PtyManager } from './pty-manager';
@@ -8,6 +7,8 @@ import { ConfigStore } from './config-store';
 import { AppUpdater } from './app-updater';
 import { AuthManager } from './auth-manager';
 import { KeyProvisioner } from './key-provisioner';
+import { createHandlers } from './ipc-handlers';
+import { WebBridge } from './web-server';
 
 let mainWindow: BrowserWindow | null = null;
 let ptyManager: PtyManager;
@@ -16,6 +17,7 @@ let configStore: ConfigStore;
 let appUpdater: AppUpdater;
 let authManager: AuthManager;
 let keyProvisioner: KeyProvisioner;
+let webBridge: WebBridge | null = null;
 
 function getResourcesPath(): string {
     if (app.isPackaged) {
@@ -71,230 +73,42 @@ function createWindow(): void {
     });
 }
 
-function setupIPC(): void {
-    // ===== Tool Management =====
-    ipcMain.handle('tools:list', () => {
-        return toolManager.listTools();
+/**
+ * Build the shared handler table and register every channel with Electron IPC.
+ * The same table is also handed to the WebBridge so remote browsers hit
+ * identical logic. Returns the registry for the bridge to reuse.
+ */
+function setupIPC() {
+    const handlers = createHandlers({
+        getMainWindow: () => mainWindow,
+        getAppVersion: () => app.getVersion(),
+        ptyManager,
+        toolManager,
+        configStore,
+        appUpdater,
+        authManager,
+        keyProvisioner,
+        webController: {
+            getStatus: () => getWebStatus(),
+            apply: async (cfg) => {
+                configStore.set('webEnabled', !!cfg.enabled);
+                configStore.set('webPort', Number(cfg.port) || 4178);
+                configStore.set('webAllowLan', !!cfg.allowLan);
+                configStore.set('webToken', cfg.token || '');
+                await applyWebBridge();
+                return getWebStatus();
+            },
+        },
     });
 
-    ipcMain.handle('tools:get-status', (_event, toolId: string) => {
-        return toolManager.getToolStatus(toolId);
-    });
+    for (const [channel, fn] of Object.entries(handlers.invoke)) {
+        ipcMain.handle(channel, (_event, ...args: any[]) => fn(...args));
+    }
+    for (const [channel, fn] of Object.entries(handlers.send)) {
+        ipcMain.on(channel, (_event, ...args: any[]) => fn(...args));
+    }
 
-    ipcMain.handle('tools:update', async (_event, toolId: string) => {
-        return toolManager.updateTool(toolId);
-    });
-
-    ipcMain.handle('tools:get-launch-preview', (_event, toolId: string) => {
-        return toolManager.getLaunchConfig(toolId);
-    });
-
-    ipcMain.handle('tools:check-update', async (_event, toolId: string) => {
-        return toolManager.checkUpdate(toolId);
-    });
-
-    // ===== PTY Management =====
-    ipcMain.handle('pty:create', (_event, toolId: string, cwd?: string) => {
-        const sessionId = ptyManager.createSession(toolId, cwd);
-        return sessionId;
-    });
-
-    ipcMain.on('pty:write', (_event, sessionId: string, data: string) => {
-        ptyManager.write(sessionId, data);
-    });
-
-    ipcMain.on('pty:resize', (_event, sessionId: string, cols: number, rows: number) => {
-        ptyManager.resize(sessionId, cols, rows);
-    });
-
-    ipcMain.handle('pty:destroy', (_event, sessionId: string) => {
-        ptyManager.destroySession(sessionId);
-    });
-
-    // ===== Window Titlebar Overlay =====
-    ipcMain.handle('window:set-titlebar-overlay', (_event, colors: { color: string; symbolColor: string }) => {
-        if (mainWindow) {
-            mainWindow.setTitleBarOverlay({
-                color: colors.color,
-                symbolColor: colors.symbolColor,
-                height: 38,
-            });
-        }
-    });
-
-    // ===== Config Management =====
-    ipcMain.handle('config:get', (_event, key: string) => {
-        return configStore.get(key);
-    });
-
-    ipcMain.handle('config:set', (_event, key: string, value: any) => {
-        configStore.set(key, value);
-    });
-
-    ipcMain.handle('config:get-api-key', (_event, provider: string) => {
-        return configStore.getApiKey(provider);
-    });
-
-    ipcMain.handle('config:set-api-key', (_event, provider: string, key: string) => {
-        configStore.setApiKey(provider, key);
-    });
-
-    ipcMain.handle('config:has-api-key', (_event, provider: string) => {
-        return configStore.hasApiKey(provider);
-    });
-
-    ipcMain.handle('config:get-base-url', (_event, provider: string) => {
-        return configStore.getBaseUrl(provider);
-    });
-
-    ipcMain.handle('config:set-base-url', (_event, provider: string, url: string) => {
-        configStore.setBaseUrl(provider, url);
-    });
-
-    ipcMain.handle('config:get-model', (_event, provider: string) => {
-        return configStore.getModel(provider);
-    });
-
-    ipcMain.handle('config:set-model', (_event, provider: string, model: string) => {
-        configStore.setModel(provider, model);
-    });
-
-    // ===== Window Controls =====
-    ipcMain.on('window:minimize', () => mainWindow?.minimize());
-    ipcMain.on('window:maximize', () => {
-        if (mainWindow?.isMaximized()) {
-            mainWindow.unmaximize();
-        } else {
-            mainWindow?.maximize();
-        }
-    });
-    ipcMain.on('window:close', () => mainWindow?.close());
-
-    // ===== App Info =====
-    ipcMain.handle('app:get-version', () => app.getVersion());
-    ipcMain.handle('app:is-encryption-available', () => safeStorage.isEncryptionAvailable());
-
-    // ===== App Update =====
-    ipcMain.handle('app:check-app-update', async () => {
-        return appUpdater.checkForUpdate();
-    });
-
-    ipcMain.handle('app:download-update', async (_event, downloadUrl: string) => {
-        return appUpdater.downloadUpdate(downloadUrl);
-    });
-
-    // ===== Reset to defaults =====
-    // Wipes API keys, base URLs, models, preferences AND the 4Router auth
-    // session, then asks the renderer to reload back to the welcome screen.
-    ipcMain.handle('app:reset-all', async () => {
-        try {
-            ptyManager.destroyAll();
-            await authManager.clearSession();
-            configStore.resetAll();
-            return { success: true };
-        } catch (err: any) {
-            return { success: false, error: String(err?.message || err) };
-        }
-    });
-
-    // ===== Remote Config Sync =====
-    ipcMain.handle('app:check-remote-config', async () => {
-        return appUpdater.checkRemoteConfig();
-    });
-
-    ipcMain.handle('app:apply-remote-config', async (_event, remoteConfig: Record<string, any>) => {
-        appUpdater.applyRemoteConfig(remoteConfig);
-        return { success: true };
-    });
-
-    // ===== Auth (Module 1) =====
-    // Renderer drives login via an in-page <webview>; this handler polls the
-    // shared `auth-4router` session to detect a logged-in cookie state and
-    // mint an accessToken.
-    ipcMain.handle('auth:check-login-status', async () => {
-        return authManager.checkLoginStatus();
-    });
-
-    ipcMain.handle('auth:is-logged-in', () => {
-        return authManager.isLoggedIn();
-    });
-
-    ipcMain.handle('auth:logout', () => {
-        authManager.logout();
-    });
-
-    // ===== Key Provisioning (Module 2) =====
-    ipcMain.handle('provision:create-keys', async () => {
-        const accessToken = authManager.getAccessToken();
-        if (!accessToken) return { success: false, error: '未登录 4Router' };
-
-        const result = await keyProvisioner.provisionKeys(accessToken);
-        if (result.success) {
-            // Auto-configure API keys and base URLs in ConfigStore
-            if (result.claudeKey) {
-                configStore.setApiKey('anthropic', result.claudeKey);
-                configStore.setBaseUrl('anthropic', 'https://4router.net');
-            }
-            if (result.codexKey) {
-                configStore.setApiKey('openai', result.codexKey);
-                configStore.setBaseUrl('openai', 'https://4router.net/v1');
-            }
-        }
-        return result;
-    });
-
-    // ===== Dialog =====
-    ipcMain.handle('dialog:select-directory', async () => {
-        const { dialog } = require('electron');
-        const result = await dialog.showOpenDialog(mainWindow!, {
-            properties: ['openDirectory'],
-        });
-        return result.canceled ? null : result.filePaths[0];
-    });
-
-    // ===== File System =====
-    ipcMain.handle('fs:read-dir', async (_event, dirPath: string) => {
-        const fs = require('fs') as typeof import('fs');
-        const nodePath = require('path') as typeof import('path');
-        try {
-            const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-            return entries
-                .filter(e => !e.name.startsWith('.'))
-                .map(e => ({
-                    name: e.name,
-                    path: nodePath.join(dirPath, e.name),
-                    isDirectory: e.isDirectory(),
-                }))
-                .sort((a, b) => {
-                    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-                    return a.name.localeCompare(b.name);
-                });
-        } catch {
-            return [];
-        }
-    });
-
-    // ===== Clipboard =====
-    // Read an image from the OS clipboard, write it to a temp .png file,
-    // and return the path. Returns null when the clipboard has no image.
-    ipcMain.handle('clipboard:read-image', async () => {
-        try {
-            const image = clipboard.readImage();
-            if (image.isEmpty()) return null;
-            const buf = image.toPNG();
-            if (!buf || buf.length === 0) return null;
-
-            const dir = path.join(os.tmpdir(), '4routerai-paste');
-            fs.mkdirSync(dir, { recursive: true });
-            const filename = `clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-            const filePath = path.join(dir, filename);
-            fs.writeFileSync(filePath, buf);
-            return filePath;
-        } catch (err) {
-            console.error('[clipboard:read-image] failed:', err);
-            return null;
-        }
-    });
+    return handlers;
 }
 
 app.whenReady().then(() => {
@@ -307,23 +121,125 @@ app.whenReady().then(() => {
     authManager = new AuthManager(configStore);
     keyProvisioner = new KeyProvisioner();
 
-    // Forward PTY data to renderer
-    ptyManager.onData((sessionId: string, data: string) => {
-        mainWindow?.webContents.send('pty:data', sessionId, data);
+    // Forward PTY data to the local renderer AND every connected web client.
+    // endOffset lets a late-joining client replay scrollback then resume the
+    // live stream with no gap or overlap.
+    ptyManager.onData((sessionId: string, data: string, endOffset: number) => {
+        mainWindow?.webContents.send('pty:data', sessionId, data, endOffset);
+        webBridge?.broadcast('pty:data', [sessionId, data, endOffset]);
     });
 
     ptyManager.onExit((sessionId: string, exitCode: number) => {
         mainWindow?.webContents.send('pty:exit', sessionId, exitCode);
+        webBridge?.broadcast('pty:exit', [sessionId, exitCode]);
     });
 
-    setupIPC();
+    // A session created by ANY client (local window or remote browser) is
+    // announced to every client so they can mirror it as a new tab.
+    ptyManager.onCreated((session) => {
+        mainWindow?.webContents.send('pty:created', session);
+        webBridge?.broadcast('pty:created', [session]);
+    });
+
+    // A session deliberately closed by one client → every client drops its tab.
+    ptyManager.onClosed((sessionId) => {
+        mainWindow?.webContents.send('pty:closed', sessionId);
+        webBridge?.broadcast('pty:closed', [sessionId]);
+    });
+
+    webHandlers = setupIPC();
     createWindow();
 
     // Set mainWindow reference for app updater progress events
     appUpdater.setMainWindow(mainWindow);
+
+    // Start the remote web bridge if it's enabled in settings (off by default).
+    void applyWebBridge();
 });
 
+/** The shared handler registry, kept so the web bridge can be (re)started. */
+let webHandlers: ReturnType<typeof setupIPC> | null = null;
+
+function getStaticDir(): string {
+    return app.isPackaged
+        ? path.join(__dirname, '..', 'renderer')
+        : path.join(__dirname, '..', '..', 'dist', 'renderer');
+}
+
+/** IPv4 LAN addresses, for building reachable URLs to show in settings. */
+function getLanIps(): string[] {
+    const nets = os.networkInterfaces();
+    const ips: string[] = [];
+    for (const list of Object.values(nets)) {
+        for (const net of list || []) {
+            if (net.family === 'IPv4' && !net.internal) ips.push(net.address);
+        }
+    }
+    return ips;
+}
+
+/**
+ * Effective web settings. Config (settings panel) is the source of truth;
+ * env vars override it as a dev/testing escape hatch:
+ *   ROUTER_WEB_PORT (number | "off"), ROUTER_WEB_HOST, ROUTER_WEB_TOKEN
+ */
+function resolveWebSettings(): { enabled: boolean; port: number; host: string; token?: string } {
+    const enabledCfg = !!configStore.get('webEnabled');
+    const port = Number(configStore.get('webPort')) || 4178;
+    const allowLan = !!configStore.get('webAllowLan');
+    const token = (configStore.get('webToken') as string) || '';
+
+    const portEnv = process.env.ROUTER_WEB_PORT;
+    const envForced = portEnv != null && portEnv.toLowerCase() !== 'off';
+
+    return {
+        enabled: envForced || enabledCfg,
+        port: envForced ? (parseInt(portEnv!, 10) || port) : port,
+        host: process.env.ROUTER_WEB_HOST || (allowLan ? '0.0.0.0' : '127.0.0.1'),
+        token: (process.env.ROUTER_WEB_TOKEN || token) || undefined,
+    };
+}
+
+/** Stop any running bridge, then start it if the current settings enable it. */
+async function applyWebBridge(): Promise<void> {
+    if (webBridge) {
+        webBridge.stop();
+        webBridge = null;
+    }
+    const cfg = resolveWebSettings();
+    if (!cfg.enabled || !webHandlers) {
+        console.log('[WebBridge] disabled');
+        return;
+    }
+    const bridge = new WebBridge(webHandlers, { staticDir: getStaticDir(), token: cfg.token });
+    try {
+        await bridge.start(cfg.port, cfg.host);
+        webBridge = bridge;
+    } catch (err) {
+        console.error('[WebBridge] failed to start:', err);
+        webBridge = null;
+    }
+}
+
+/** Status payload for the settings panel: current config + runtime + URLs. */
+function getWebStatus(): Record<string, any> {
+    const enabled = !!configStore.get('webEnabled');
+    const port = Number(configStore.get('webPort')) || 4178;
+    const allowLan = !!configStore.get('webAllowLan');
+    const token = (configStore.get('webToken') as string) || '';
+    const running = !!webBridge?.isRunning();
+
+    const urls: string[] = [];
+    if (running) {
+        const q = token ? `?token=${encodeURIComponent(token)}` : '';
+        urls.push(`http://127.0.0.1:${port}${q}`);
+        if (allowLan) for (const ip of getLanIps()) urls.push(`http://${ip}:${port}${q}`);
+    }
+    return { enabled, port, allowLan, token, running, urls };
+}
+
 app.on('window-all-closed', () => {
+    webBridge?.stop();
     ptyManager?.destroyAll();
     app.quit();
 });

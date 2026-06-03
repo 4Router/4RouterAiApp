@@ -23,6 +23,7 @@
     "license": "MIT",
     "devDependencies": {
         "@types/node": "^20.11.0",
+        "@types/ws": "^8.18.1",
         "concurrently": "^8.2.2",
         "electron": "^33.0.0",
         "electron-builder": "^25.1.0",
@@ -36,7 +37,8 @@
         "@xterm/addon-web-links": "^0.11.0",
         "@xterm/xterm": "^5.5.0",
         "electron-store": "^8.2.0",
-        "node-pty": "^1.0.0"
+        "node-pty": "^1.0.0",
+        "ws": "^8.21.0"
     },
     "build": {
         "appId": "com.4routerai.app",
