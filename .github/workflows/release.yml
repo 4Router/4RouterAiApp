@@ -45,17 +45,11 @@ jobs:
         with:
           node-version: 20
 
-      - name: Fix node-gyp distutils (Python 3.12+)
-        if: steps.check_tag.outputs.exists == 'false'
-        run: pip install setuptools
-
+      # node-pty ships N-API prebuilds (incl. bundled conpty.dll), so no
+      # node-gyp compile or electron-rebuild step is needed.
       - name: Install dependencies
         if: steps.check_tag.outputs.exists == 'false'
         run: npm install
-
-      - name: Rebuild native modules for Electron
-        if: steps.check_tag.outputs.exists == 'false'
-        run: npx electron-rebuild -f -w node-pty
 
       # ── Build ──
       - name: Compile TypeScript (main process)

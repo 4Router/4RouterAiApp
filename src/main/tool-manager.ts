@@ -30,6 +30,9 @@ interface ResolvedToolPath {
     launchMode: 'node-script' | 'command';
 }
 
+const OFFICIAL_REGISTRY = 'https://registry.npmjs.org/';
+const CHINA_MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
+
 /**
  * Extract user-managed sections from an existing Codex config.toml,
  * filtering out host-controlled keys and sections that 4RouterAi
@@ -541,28 +544,34 @@ export class ToolManager {
             ? '@anthropic-ai/claude-code'
             : '@openai/codex';
 
+        if (!this.hasBundledRuntime()) {
+            return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
+        }
+
+        // Same unified registry strategy as updateTool: official first,
+        // npmmirror as the mainland-China fallback. Keeping the two paths
+        // identical avoids "version seen" ≠ "version installed" mismatches.
+        const latest = await this.npmViewVersion(packageName, OFFICIAL_REGISTRY)
+            ?? await this.npmViewVersion(packageName, CHINA_MIRROR_REGISTRY);
+        if (!latest) {
+            return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
+        }
+
+        const hasUpdate = latest !== tool.version;
+        console.log(`[ToolManager] ${toolId}: current=${tool.version}, latest=${latest}, hasUpdate=${hasUpdate}`);
+        return { hasUpdate, currentVersion: tool.version, latestVersion: latest };
+    }
+
+    private npmViewVersion(packageName: string, registry: string): Promise<string | null> {
         return new Promise((resolve) => {
             const { execFile } = require('child_process') as typeof import('child_process');
-            const npmExec = this.getBundledNodeExecutable();
-            const npmCli = this.getBundledNpmCli();
-            if (!this.hasBundledRuntime()) {
-                resolve({ hasUpdate: false, currentVersion: tool.version!, latestVersion: 'unknown' });
-                return;
-            }
-
-            execFile(npmExec, [npmCli, 'view', packageName, 'version'], {
+            const args = [this.getBundledNpmCli(), 'view', packageName, 'version', '--registry', registry];
+            execFile(this.getBundledNodeExecutable(), args, {
                 timeout: 15000,
                 windowsHide: true,
                 env: buildSanitizedEnv(this.buildRuntimeEnv()),
             }, (error, stdout) => {
-                if (error || !stdout.trim()) {
-                    resolve({ hasUpdate: false, currentVersion: tool.version!, latestVersion: 'unknown' });
-                    return;
-                }
-                const latest = stdout.trim();
-                const hasUpdate = latest !== tool.version;
-                console.log(`[ToolManager] ${toolId}: current=${tool.version}, latest=${latest}, hasUpdate=${hasUpdate}`);
-                resolve({ hasUpdate, currentVersion: tool.version!, latestVersion: latest });
+                resolve(error || !stdout.trim() ? null : stdout.trim());
             });
         });
     }
@@ -595,8 +604,25 @@ export class ToolManager {
         console.log(`[ToolManager] Updating ${toolId} in ${toolDir}`);
         console.log(`[ToolManager] Package: ${packageName}@latest`);
 
-        const result = await this.npmInstall(packageName, toolDir);
-        if (!result.success) return result;
+        // Registry strategy is explicit and unified — `--registry` overrides
+        // any user ~/.npmrc, so every install behaves the same: official
+        // registry first; direct connections to registry.npmjs.org are
+        // unreliable from mainland China, so on failure retry against
+        // npmmirror — unless the failure is a permission error a mirror
+        // can't fix.
+        const result = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
+        if (!result.success) {
+            if (this.isPermissionError(result.error)) return result;
+
+            console.log(`[ToolManager] Official-registry install failed, retrying with npmmirror...`);
+            const mirrorResult = await this.npmInstall(packageName, toolDir, CHINA_MIRROR_REGISTRY);
+            if (!mirrorResult.success) {
+                return {
+                    success: false,
+                    error: `Install failed from both the official registry and npmmirror.\n--- official registry ---\n${result.error}\n--- npmmirror ---\n${mirrorResult.error}`,
+                };
+            }
+        }
 
         // Both Claude Code (≥2.1.113) and Codex distribute platform-specific
         // native binaries via optional dependencies. Chinese mirrors like
@@ -610,7 +636,7 @@ export class ToolManager {
 
         if (!hasPlatformPkg) {
             console.log(`[ToolManager] ${toolId} platform package missing after install, retrying with official registry...`);
-            const fallback = await this.npmInstall(packageName, toolDir, 'https://registry.npmjs.org/');
+            const fallback = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
             if (!fallback.success) return fallback;
 
             const hasPlatformPkgRetry = toolId === 'claude-code'
@@ -624,6 +650,15 @@ export class ToolManager {
         this.detectTools();
         const updated = this.toolDefinitions.find(t => t.id === toolId);
         return { success: true, version: updated?.version || 'unknown' };
+    }
+
+    /**
+     * Permission failures (e.g. the app is installed under Program Files
+     * and npm can't write to resources/bundled-tools) won't be fixed by
+     * switching registries — don't waste a retry on them.
+     */
+    private isPermissionError(message?: string): boolean {
+        return !!message && /\b(EPERM|EACCES)\b/.test(message);
     }
 
     private npmInstall(

@@ -1,5 +1,6 @@
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
 import { spawn as ptySpawn, IPty } from 'node-pty';
 import { ToolManager, LaunchConfig } from './tool-manager';
 import { buildSanitizedEnv } from './process-env';
@@ -31,6 +32,56 @@ type DataCallback = (sessionId: string, data: string, endOffset: number) => void
 type ExitCallback = (sessionId: string, exitCode: number) => void;
 type CreatedCallback = (session: SessionInfo) => void;
 type ClosedCallback = (sessionId: string) => void;
+
+/** Spawn a pty, preferring node-pty's bundled conpty.dll on Windows.
+ *
+ *  Windows 10's inbox ConPTY (frozen on 2019-era conhost) mishandles DECSTBM
+ *  scroll-region sequences: region scrolls are re-rendered with absolute
+ *  positioning instead of real scrolls, so lines pushed "off the top" never
+ *  reach the host terminal's scrollback. Codex relies on DECSTBM to move chat
+ *  history into scrollback — on Win10 the history silently vanished and the
+ *  scrollbar never appeared. The conpty.dll shipped with node-pty (same build
+ *  VS Code enables by default) carries the rewritten conhost and handles this
+ *  correctly on every Windows version. */
+function spawnPty(
+    bin: string,
+    args: string[],
+    opts: { cwd: string; env: { [key: string]: string } },
+): IPty {
+    const base = { name: 'xterm-256color', cols: 120, rows: 30, ...opts };
+    if (os.platform() !== 'win32') {
+        return ptySpawn(bin, args, base);
+    }
+    try {
+        return ptySpawn(bin, args, { ...base, useConptyDll: true });
+    } catch (err) {
+        // Bundled dll missing/blocked (e.g. AV quarantine) — inbox ConPTY
+        // still beats no terminal at all.
+        console.warn('[PtyManager] Bundled ConPTY unavailable, falling back to inbox ConPTY:', err);
+        return ptySpawn(bin, args, base);
+    }
+}
+
+/** Absolute path to Windows PowerShell, resolved from %SystemRoot%.
+ *
+ *  node-pty resolves a *relative* program name (e.g. 'powershell.exe') by
+ *  searching the host process's OWN `Path` (conpty.cc → get_shell_path) — not
+ *  the env we hand it for the child. On machines whose `Path` is missing
+ *  `…\System32\WindowsPowerShell\v1.0\` — dropped by a legacy PATH editor that
+ *  truncates the registry value, a stripped corporate image, or an empty
+ *  inherited environment — that search returns nothing and node-pty throws
+ *  `File not found:` before the tool can even launch (surfaced to the renderer
+ *  as `Error invoking remote method 'pty:create'`). Handing node-pty an
+ *  absolute path skips the PATH search entirely (it trusts the path verbatim
+ *  when PathIsRelativeW is false). The historical `v1.0` folder is the current
+ *  home of Windows PowerShell 5.1 and is present on every supported desktop
+ *  Windows, so this resolves even when `Path` itself is broken. */
+function windowsShellPath(): string {
+    const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+    const pwsh = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    // Last-resort fall back to the bare name — no worse than the old behaviour.
+    return fs.existsSync(pwsh) ? pwsh : 'powershell.exe';
+}
 
 export class PtyManager {
     private sessions: Map<string, PtySession> = new Map();
@@ -82,7 +133,6 @@ export class PtyManager {
         const sessionId = `session-${++this.sessionCounter}-${Date.now()}`;
         const defaultCwd = path.join(os.homedir(), 'Documents', '4RouterAi');
         if (!cwd) {
-            const fs = require('fs') as typeof import('fs');
             fs.mkdirSync(defaultCwd, { recursive: true });
         }
         const workingDir = cwd || defaultCwd;
@@ -104,18 +154,12 @@ export class PtyManager {
             // Plain shell — no CLI tool
             console.log(`[PtyManager] Launching shell in ${workingDir}`);
             if (isWin) {
-                pty = ptySpawn('powershell.exe', ['-NoLogo'], {
-                    name: 'xterm-256color',
-                    cols: 120,
-                    rows: 30,
+                pty = spawnPty(windowsShellPath(), ['-NoLogo'], {
                     cwd: workingDir,
                     env: shellEnv,
                 });
             } else {
-                pty = ptySpawn(process.env.SHELL || '/bin/bash', [], {
-                    name: 'xterm-256color',
-                    cols: 120,
-                    rows: 30,
+                pty = spawnPty(process.env.SHELL || '/bin/bash', [], {
                     cwd: workingDir,
                     env: shellEnv,
                 });
@@ -134,18 +178,6 @@ export class PtyManager {
 
             const env = { ...toolBaseEnv, ...launchConfig.env };
 
-            // On Windows, older ConPTY builds silently mishandle DECSTBM scroll-
-            // region sequences that Codex uses (in Standard mode) to push chat
-            // history into the terminal scrollback.  The result: the scrollback
-            // stays empty and no scrollbar ever appears.
-            //
-            // Setting ZELLIJ=1 tricks Codex into using its Zellij-compatible
-            // rendering path, which inserts history via plain newlines instead
-            // of DECSTBM — an operation every ConPTY version handles correctly.
-            if (isWin && toolId === 'codex') {
-                env.ZELLIJ = '1';
-            }
-
             if (isWin) {
                 const cmdParts = [`& "${launchConfig.bin}"`];
                 for (const arg of launchConfig.args) {
@@ -155,23 +187,17 @@ export class PtyManager {
                 const fullCommand = cmdParts.join(' ');
                 console.log(`  powershell cmd: ${fullCommand}`);
 
-                pty = ptySpawn('powershell.exe', [
+                pty = spawnPty(windowsShellPath(), [
                     '-NoProfile',
                     '-NoLogo',
                     '-Command',
                     fullCommand,
                 ], {
-                    name: 'xterm-256color',
-                    cols: 120,
-                    rows: 30,
                     cwd: workingDir,
                     env,
                 });
             } else {
-                pty = ptySpawn(launchConfig.bin, launchConfig.args, {
-                    name: 'xterm-256color',
-                    cols: 120,
-                    rows: 30,
+                pty = spawnPty(launchConfig.bin, launchConfig.args, {
                     cwd: workingDir,
                     env,
                 });
