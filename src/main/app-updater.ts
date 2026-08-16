@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ConfigStore } from './config-store';
+import { isNewerVersion } from './version-compare';
 
 const GITHUB_API_URL = 'https://api.github.com/repos/4Router/4RouterAiApp/releases/latest';
 const REMOTE_CONFIG_URL = 'https://raw.githubusercontent.com/4Router/4RouterAiApp/main/remote-config.json';
@@ -65,6 +66,7 @@ export interface DownloadResult {
     filePath?: string;
     error?: string;
 }
+
 
 /**
  * Helper: make an HTTPS GET request and return the response body as a string.
@@ -196,7 +198,10 @@ export class AppUpdater {
                 }
             }
 
-            const hasUpdate = latestVersion !== currentVersion && latestVersion !== 'unknown' && latestVersion !== '';
+            // Only a strictly newer release counts. Comparing for inequality
+            // used to flag a *downgrade* as an update whenever the local build
+            // ran ahead of the published tag.
+            const hasUpdate = isNewerVersion(latestVersion, currentVersion);
 
             console.log(`[AppUpdater] current=${currentVersion}, latest=${latestVersion}, hasUpdate=${hasUpdate}`);
 

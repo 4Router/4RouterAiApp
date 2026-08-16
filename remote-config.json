@@ -1,7 +1,7 @@
 {
     "models": {
         "anthropic": "opus[1m]",
-        "openai": "gpt-5.5"
+        "openai": "gpt-5.6-sol"
     },
     "codexReasoningEffort": "xhigh",
     "codexVerbosity": "high",

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { buildSanitizedEnv } from './process-env';
+import { isNewerVersion } from './version-compare';
 
 export interface ToolInfo {
     id: string;
@@ -557,7 +558,9 @@ export class ToolManager {
             return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
         }
 
-        const hasUpdate = latest !== tool.version;
+        // A mirror can lag behind the official registry and report an older
+        // version; treating "different" as "newer" would offer a downgrade.
+        const hasUpdate = isNewerVersion(latest, tool.version);
         console.log(`[ToolManager] ${toolId}: current=${tool.version}, latest=${latest}, hasUpdate=${hasUpdate}`);
         return { hasUpdate, currentVersion: tool.version, latestVersion: latest };
     }

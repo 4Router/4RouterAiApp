@@ -1,5 +1,6 @@
 import { safeStorage } from 'electron';
 import Store from 'electron-store';
+import type { DeviceRecord } from './web-auth';
 
 interface ConfigSchema {
     theme: 'dark' | 'light' | 'fruit';
@@ -20,9 +21,27 @@ interface ConfigSchema {
     // Remote web access (off by default).
     webEnabled: boolean;
     webPort: number;
-    webAllowLan: boolean;
     webToken: string;
+    /** Extra hostnames the bridge may be reached under (frp/tunnel domains). */
+    webAllowedHosts: string[];
+    /** Require the host user to approve each new device. */
+    webRequireApproval: boolean;
+    /** Serve TLS directly using a self-signed certificate. */
+    webHttps: boolean;
+    /** CIDRs whose traffic is already encrypted at the network layer (WireGuard). */
+    webTrustedNetworks: string[];
+    /** Secret URL path segment; requests outside it get a bare 404. */
+    webPathPrefix: string;
+    /** Paired devices; tokens are stored hashed. */
+    webDevices: DeviceRecord[];
 }
+
+/**
+ * Keys the generic `config:get` / `config:set` channels must never touch.
+ * Both channels are reachable from a remote browser, so anything here needs a
+ * dedicated accessor that the handler table can gate separately.
+ */
+const PROTECTED_KEYS = new Set(['encryptedKeys', 'webToken', 'webDevices', 'webPathPrefix']);
 
 const defaults: ConfigSchema = {
     theme: 'light',
@@ -41,9 +60,19 @@ const defaults: ConfigSchema = {
     codexBypassPermissions: false,
     firstLaunch: true,
     webEnabled: false,
-    webPort: 4178,
-    webAllowLan: false,
+    // High enough to stay clear of the OEM background services that squat on
+    // low-4000 ports (ASUS AURA's LightingService takes 4178, for one), and
+    // below Windows' dynamic range so it isn't handed out to something else.
+    webPort: 18470,
     webToken: '',
+    webAllowedHosts: [],
+    webRequireApproval: true,
+    // On by default: the bridge listens on every interface, and everything
+    // except the host's own loopback access requires an encrypted transport.
+    webHttps: true,
+    webTrustedNetworks: [],
+    webPathPrefix: '',
+    webDevices: [],
 };
 
 export class ConfigStore {
@@ -54,16 +83,67 @@ export class ConfigStore {
             name: '4routerai-config',
             defaults,
         });
+        this.migrateRemoteAccess();
+    }
+
+    /**
+     * Bring pre-existing remote-access config in line with the current model.
+     *
+     * The bridge used to bind loopback-only unless `webAllowLan` was set, and
+     * shipped with TLS off; it now always listens on every interface and
+     * refuses unencrypted non-loopback connections. A stored config carrying
+     * the old keys would therefore end up listening yet unreachable, so TLS is
+     * switched on once during the upgrade and the dead keys are dropped.
+     * Defaults alone can't do this — they only apply to keys never written.
+     */
+    private migrateRemoteAccess(): void {
+        // These keys are gone from ConfigSchema, so they need the cast to be
+        // looked up at all.
+        const legacyKeys = ['webAllowLan', 'webSecurityLevel', 'webRequireSecure'] as unknown as Array<keyof ConfigSchema>;
+        const stale = legacyKeys.filter(key => this.store.has(key));
+        if (!stale.length) return;
+
+        this.store.set('webHttps', true);
+        for (const key of stale) this.store.delete(key);
+        console.log(`[ConfigStore] migrated remote-access settings (dropped ${stale.join(', ')})`);
     }
 
     get(key: string): any {
-        if (key === 'encryptedKeys') return undefined; // Don't expose raw encrypted data
+        if (PROTECTED_KEYS.has(key)) return undefined;
         return this.store.get(key as keyof ConfigSchema);
     }
 
     set(key: string, value: any): void {
-        if (key === 'encryptedKeys') return; // Protect encrypted keys
+        if (PROTECTED_KEYS.has(key)) return;
         this.store.set(key as keyof ConfigSchema, value);
+    }
+
+    // ===== Remote web access secrets =====
+    // Deliberately outside get()/set() so the remote-reachable config channels
+    // can't read the bridge's own credentials.
+
+    getWebToken(): string {
+        return this.store.get('webToken', '') as string;
+    }
+
+    setWebToken(token: string): void {
+        this.store.set('webToken', token);
+    }
+
+    getWebDevices(): DeviceRecord[] {
+        return (this.store.get('webDevices', []) as DeviceRecord[]) || [];
+    }
+
+    setWebDevices(devices: DeviceRecord[]): void {
+        this.store.set('webDevices', devices);
+    }
+
+    getWebPathPrefix(): string {
+        return this.store.get('webPathPrefix', '') as string;
+    }
+
+    setWebPathPrefix(prefix: string): void {
+        this.store.set('webPathPrefix', prefix);
     }
 
     /**

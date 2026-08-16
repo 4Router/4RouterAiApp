@@ -1,6 +1,6 @@
 {
     "name": "4routerai",
-    "version": "1.1.10",
+    "version": "1.2.0",
     "description": "All-in-one AI coding assistant — Claude Code & Codex in a single app",
     "engines": {
         "node": ">=20"
@@ -14,6 +14,8 @@
         "build:main": "tsc -p tsconfig.main.json",
         "build:renderer": "vite build",
         "bundle-tools": "node scripts/bundle-tools.mjs",
+        "verify": "npm run build && node scripts/verify-web-auth.cjs && node scripts/verify-version.cjs",
+        "verify:remote": "npm run build && node scripts/verify-web-auth.cjs",
         "package": "npm run build && npm run bundle-tools && electron-builder --win",
         "start": "electron .",
         "start:dev": "electron . --dev"
@@ -31,6 +33,7 @@
         "vite": "^6.0.0"
     },
     "dependencies": {
+        "@peculiar/x509": "^1.14.3",
         "@xterm/addon-fit": "^0.10.0",
         "@xterm/addon-unicode11": "^0.8.0",
         "@xterm/addon-web-links": "^0.11.0",

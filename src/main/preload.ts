@@ -63,10 +63,58 @@ contextBridge.exposeInMainWorld('routerAi', {
     },
 
     // ===== Remote Web Access =====
+    // These channels are rejected by the WebBridge, so they only ever run from
+    // this desktop window (see HandlerRegistry.localOnly).
     web: {
         getStatus: () => ipcRenderer.invoke('web:get-status'),
-        apply: (cfg: { enabled: boolean; port: number; allowLan: boolean; token: string }) =>
-            ipcRenderer.invoke('web:apply', cfg),
+        apply: (cfg: {
+            enabled: boolean;
+            port: number;
+            allowedHosts: string[];
+            requireApproval: boolean;
+            https: boolean;
+            trustedNetworks: string[];
+        }) => ipcRenderer.invoke('web:apply', cfg),
+        createPairingCode: () => ipcRenderer.invoke('web:create-pairing-code'),
+        clearPairingCode: () => ipcRenderer.invoke('web:clear-pairing-code'),
+        rotateToken: () => ipcRenderer.invoke('web:rotate-token'),
+        rotatePathPrefix: () => ipcRenderer.invoke('web:rotate-path-prefix'),
+        regenerateCert: () => ipcRenderer.invoke('web:regenerate-cert'),
+        trustCert: () => ipcRenderer.invoke('web:trust-cert'),
+        exportCa: () => ipcRenderer.invoke('web:export-ca'),
+        listAudit: (limit?: number) => ipcRenderer.invoke('web:list-audit', limit),
+        clearAudit: () => ipcRenderer.invoke('web:clear-audit'),
+        clearLockdown: () => ipcRenderer.invoke('web:clear-lockdown'),
+        listDevices: () => ipcRenderer.invoke('web:list-devices'),
+        renameDevice: (id: string, name: string) => ipcRenderer.invoke('web:rename-device', id, name),
+        revokeDevice: (id: string) => ipcRenderer.invoke('web:revoke-device', id),
+        revokeAllDevices: () => ipcRenderer.invoke('web:revoke-all-devices'),
+        listClients: () => ipcRenderer.invoke('web:list-clients'),
+        disconnectClient: (id: string) => ipcRenderer.invoke('web:disconnect-client', id),
+        disconnectAll: () => ipcRenderer.invoke('web:disconnect-all'),
+        listRequests: () => ipcRenderer.invoke('web:list-requests'),
+        resolveRequest: (id: string, approved: boolean) =>
+            ipcRenderer.invoke('web:resolve-request', id, approved),
+        onAccessRequest: (callback: (request: any) => void) => {
+            const listener = (_event: any, request: any) => callback(request);
+            ipcRenderer.on('web:access-request', listener);
+            return () => ipcRenderer.removeListener('web:access-request', listener);
+        },
+        onClientsChanged: (callback: (clients: any[]) => void) => {
+            const listener = (_event: any, clients: any[]) => callback(clients);
+            ipcRenderer.on('web:clients-changed', listener);
+            return () => ipcRenderer.removeListener('web:clients-changed', listener);
+        },
+        onAudit: (callback: (event: any) => void) => {
+            const listener = (_event: any, entry: any) => callback(entry);
+            ipcRenderer.on('web:audit', listener);
+            return () => ipcRenderer.removeListener('web:audit', listener);
+        },
+        onLockdown: (callback: (state: any) => void) => {
+            const listener = (_event: any, state: any) => callback(state);
+            ipcRenderer.on('web:lockdown', listener);
+            return () => ipcRenderer.removeListener('web:lockdown', listener);
+        },
     },
 
     // ===== Window Controls =====

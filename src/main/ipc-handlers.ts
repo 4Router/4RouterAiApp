@@ -23,11 +23,44 @@ export interface HandlerDeps {
     appUpdater: AppUpdater;
     authManager: AuthManager;
     keyProvisioner: KeyProvisioner;
-    /** Controls the remote web bridge (start/stop + status) for the settings UI. */
+    /** Controls the remote web bridge (start/stop, credentials, connected clients). */
     webController: {
-        getStatus: () => Record<string, any>;
-        apply: (cfg: { enabled: boolean; port: number; allowLan: boolean; token: string }) => Promise<Record<string, any>>;
+        getStatus: () => Promise<Record<string, any>>;
+        apply: (cfg: WebApplyConfig) => Promise<Record<string, any>>;
+        createPairingCode: () => { code: string; expiresAt: number };
+        clearPairingCode: () => void;
+        rotateToken: () => string;
+        rotatePathPrefix: () => Promise<Record<string, any>>;
+        regenerateCert: () => Promise<Record<string, any>>;
+        /** Add the local CA to the OS trust store (Windows current-user Root). */
+        trustCert: () => Promise<Record<string, any>>;
+        /** Save the CA certificate to a user-chosen path, for other devices. */
+        exportCa: () => Promise<Record<string, any>>;
+        listDevices: () => any[];
+        renameDevice: (id: string, name: string) => boolean;
+        revokeDevice: (id: string) => boolean;
+        revokeAllDevices: () => void;
+        listClients: () => any[];
+        disconnectClient: (id: string) => boolean;
+        disconnectAll: () => number;
+        listRequests: () => any[];
+        resolveRequest: (id: string, approved: boolean) => boolean;
+        listAudit: (limit?: number) => any[];
+        clearAudit: () => void;
+        clearLockdown: () => void;
     };
+}
+
+export interface WebApplyConfig {
+    enabled: boolean;
+    port: number;
+    /** Extra hostnames accepted in the Host header (tunnel domains). */
+    allowedHosts: string[];
+    requireApproval: boolean;
+    /** Serve TLS directly with a self-signed certificate. */
+    https: boolean;
+    /** CIDRs already encrypted at the network layer (WireGuard, Tailscale…). */
+    trustedNetworks: string[];
 }
 
 /**
@@ -36,10 +69,14 @@ export interface HandlerDeps {
  *
  * - `invoke` channels are request/response (Electron `ipcMain.handle`).
  * - `send` channels are fire-and-forget (Electron `ipcMain.on`).
+ * - `localOnly` names channels the WebBridge must refuse. These administer the
+ *   bridge itself, so honouring them from a remote client would let a connected
+ *   browser rotate credentials, approve devices or reopen the bridge to the LAN.
  */
 export interface HandlerRegistry {
     invoke: Record<string, (...args: any[]) => any>;
     send: Record<string, (...args: any[]) => void>;
+    localOnly: Set<string>;
 }
 
 export function createHandlers(deps: HandlerDeps): HandlerRegistry {
@@ -89,10 +126,28 @@ export function createHandlers(deps: HandlerDeps): HandlerRegistry {
         'config:get-model': (provider: string) => configStore.getModel(provider),
         'config:set-model': (provider: string, model: string) => configStore.setModel(provider, model),
 
-        // ===== Remote Web Access =====
+        // ===== Remote Web Access (all local-only — see HandlerRegistry) =====
         'web:get-status': () => webController.getStatus(),
-        'web:apply': (cfg: { enabled: boolean; port: number; allowLan: boolean; token: string }) =>
-            webController.apply(cfg),
+        'web:apply': (cfg: WebApplyConfig) => webController.apply(cfg),
+        'web:create-pairing-code': () => webController.createPairingCode(),
+        'web:clear-pairing-code': () => webController.clearPairingCode(),
+        'web:rotate-token': () => webController.rotateToken(),
+        'web:rotate-path-prefix': () => webController.rotatePathPrefix(),
+        'web:regenerate-cert': () => webController.regenerateCert(),
+        'web:trust-cert': () => webController.trustCert(),
+        'web:export-ca': () => webController.exportCa(),
+        'web:list-audit': (limit?: number) => webController.listAudit(limit),
+        'web:clear-audit': () => webController.clearAudit(),
+        'web:clear-lockdown': () => webController.clearLockdown(),
+        'web:list-devices': () => webController.listDevices(),
+        'web:rename-device': (id: string, name: string) => webController.renameDevice(id, name),
+        'web:revoke-device': (id: string) => webController.revokeDevice(id),
+        'web:revoke-all-devices': () => webController.revokeAllDevices(),
+        'web:list-clients': () => webController.listClients(),
+        'web:disconnect-client': (id: string) => webController.disconnectClient(id),
+        'web:disconnect-all': () => webController.disconnectAll(),
+        'web:list-requests': () => webController.listRequests(),
+        'web:resolve-request': (id: string, approved: boolean) => webController.resolveRequest(id, approved),
 
         // ===== App Info =====
         'app:get-version': () => getAppVersion(),
@@ -214,5 +269,21 @@ export function createHandlers(deps: HandlerDeps): HandlerRegistry {
         'window:close': () => getMainWindow()?.close(),
     };
 
-    return { invoke, send };
+    // Every `web:*` channel administers the bridge — its credentials, its
+    // paired devices, its bind address. Serving them to a connected browser
+    // would let that browser approve itself, clear the token or reopen the
+    // bridge to the LAN, so they stay on the desktop window.
+    //
+    // `window:*` acts on the host Electron window (closing it quits the app and
+    // drops every remote client). The web shim already stubs these out, so
+    // refusing them here costs nothing.
+    const localOnly = new Set<string>([
+        ...Object.keys(invoke).filter(ch => ch.startsWith('web:')),
+        'window:set-titlebar-overlay',
+        'window:minimize',
+        'window:maximize',
+        'window:close',
+    ]);
+
+    return { invoke, send, localOnly };
 }

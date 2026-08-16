@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300..800&family=JetBrains+Mono:wght@400..700&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="./styles/global.css">
 </head>
@@ -20,32 +20,31 @@
   <header id="titlebar">
     <!-- Mobile-only drawer toggle (hidden on desktop via CSS) -->
     <button id="btn-menu" class="titlebar-menu-btn" title="菜单" aria-label="菜单">
-      <svg width="18" height="18" viewBox="0 0 18 18">
-        <rect y="2" width="18" height="2" rx="1" fill="currentColor" />
-        <rect y="8" width="18" height="2" rx="1" fill="currentColor" />
-        <rect y="14" width="18" height="2" rx="1" fill="currentColor" />
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16" />
       </svg>
     </button>
     <div class="titlebar-drag">
       <div class="titlebar-logo">
         <img src="./icon.png" class="logo-icon" alt="icon">
-        <span class="logo-text">4RouterAi</span>
+        <span class="logo-text">4Router<span class="logo-text-ai">Ai</span></span>
       </div>
     </div>
     <div class="titlebar-controls">
       <button id="btn-minimize" class="titlebar-btn" title="最小化">
-        <svg width="12" height="12" viewBox="0 0 12 12">
-          <rect y="5" width="12" height="2" fill="currentColor" />
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M1.5 6h9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
         </svg>
       </button>
       <button id="btn-maximize" class="titlebar-btn" title="最大化">
-        <svg width="12" height="12" viewBox="0 0 12 12">
-          <rect x="1" y="1" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none" />
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <rect x="1.75" y="1.75" width="8.5" height="8.5" rx="1.5" stroke="currentColor" stroke-width="1.2"
+            fill="none" />
         </svg>
       </button>
       <button id="btn-close" class="titlebar-btn titlebar-btn-close" title="关闭">
-        <svg width="12" height="12" viewBox="0 0 12 12">
-          <path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="1.5" />
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
         </svg>
       </button>
     </div>
@@ -53,11 +52,19 @@
 
   <!-- Welcome / Setup Screen -->
   <div id="welcome-screen" class="screen">
+    <div class="welcome-ambient" aria-hidden="true">
+      <div class="ambient-glow ambient-glow-a"></div>
+      <div class="ambient-glow ambient-glow-b"></div>
+      <div class="ambient-grid"></div>
+    </div>
+
     <div class="welcome-container">
       <div class="welcome-hero">
-        <div class="welcome-icon-pulse">⚡</div>
-        <h1>欢迎使用 4RouterAi</h1>
-        <p class="welcome-subtitle">统一的 AI 编程助手，Claude Code 与 Codex 尽在指尖</p>
+        <div class="welcome-mark">
+          <img src="./icon.png" alt="4RouterAi">
+        </div>
+        <h1>欢迎使用 <span class="brand-grad">4RouterAi</span></h1>
+        <p class="welcome-subtitle">一个界面，双 Agent — Claude Code 与 Codex CLI 开箱即用</p>
       </div>
 
       <!-- 第一阶段：选择配置方式 -->
@@ -65,31 +72,45 @@
         <!-- 自行配置 -->
         <div class="setup-card setup-card-choice" id="card-manual-config">
           <div class="setup-card-header">
-            <span class="tool-icon">🔧</span>
+            <span class="tool-icon tile tile-neutral">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+              </svg>
+            </span>
             <h3>自行配置</h3>
           </div>
-          <p>我已有 API Key，手动输入配置</p>
-          <button id="btn-manual-config" class="btn-primary" style="width:100%;margin-top:12px;">开始配置</button>
+          <p>已有 API Key？手动填写密钥与 Base URL。</p>
+          <button id="btn-manual-config" class="btn-primary btn-block">开始配置</button>
         </div>
 
         <!-- 4Router.net 一键配置 -->
         <div class="setup-card setup-card-choice" data-provider="4router">
           <div class="setup-card-header">
-            <span class="tool-icon">🔑</span>
+            <span class="tool-icon tile tile-accent">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L13 9" />
+              </svg>
+            </span>
             <h3>4Router.net</h3>
           </div>
-          <p>登录 4Router 账号，自动同步 API 配置</p>
-          <button id="btn-login-4router" class="btn-primary" style="width:100%;margin-top:12px;">一键配置</button>
+          <p>登录 4Router 账号，自动同步 API 配置。</p>
+          <button id="btn-login-4router" class="btn-primary btn-block">一键配置</button>
         </div>
       </div>
 
       <!-- 第二阶段：手动配置表单（默认隐藏） -->
       <div id="setup-manual" class="hidden">
-        <div class="setup-cards">
+        <div class="setup-cards setup-cards-form">
           <!-- Claude Code -->
           <div class="setup-card" data-provider="anthropic">
             <div class="setup-card-header">
-              <span class="tool-icon">🟣</span>
+              <span class="tool-icon tile tile-claude">
+                <svg class="icon icon-fill" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2.2l2.5 7.3L21.8 12l-7.3 2.5L12 21.8l-2.5-7.3L2.2 12l7.3-2.5L12 2.2z" />
+                </svg>
+              </span>
               <h3>Claude Code</h3>
               <span class="setup-status" id="status-anthropic">未配置</span>
             </div>
@@ -97,7 +118,12 @@
             <div class="api-key-input-group">
               <input type="password" id="key-anthropic" placeholder="输入 ANTHROPIC_API_KEY" class="api-key-input"
                 autocomplete="off">
-              <button class="btn-toggle-visibility" data-target="key-anthropic" title="显示/隐藏">👁</button>
+              <button class="btn-toggle-visibility" data-target="key-anthropic" title="显示/隐藏">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                  <circle cx="12" cy="12" r="2.6" />
+                </svg>
+              </button>
             </div>
             <div class="base-url-input-group">
               <input type="text" id="baseurl-anthropic" placeholder="Base URL (默认: https://api.anthropic.com)"
@@ -108,7 +134,11 @@
           <!-- Codex -->
           <div class="setup-card" data-provider="openai">
             <div class="setup-card-header">
-              <span class="tool-icon">🟢</span>
+              <span class="tool-icon tile tile-codex">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8.5 7L4 12l4.5 5M15.5 7l4.5 5-4.5 5" />
+                </svg>
+              </span>
               <h3>Codex CLI</h3>
               <span class="setup-status" id="status-openai">未配置</span>
             </div>
@@ -116,7 +146,12 @@
             <div class="api-key-input-group">
               <input type="password" id="key-openai" placeholder="输入 OPENAI_API_KEY" class="api-key-input"
                 autocomplete="off">
-              <button class="btn-toggle-visibility" data-target="key-openai" title="显示/隐藏">👁</button>
+              <button class="btn-toggle-visibility" data-target="key-openai" title="显示/隐藏">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                  <circle cx="12" cy="12" r="2.6" />
+                </svg>
+              </button>
             </div>
             <div class="base-url-input-group">
               <input type="text" id="baseurl-openai" placeholder="Base URL (默认: https://api.openai.com/v1)"
@@ -127,16 +162,21 @@
           <!-- 4Router.net 一键配置 -->
           <div class="setup-card" data-provider="4router">
             <div class="setup-card-header">
-              <span class="tool-icon">🔑</span>
+              <span class="tool-icon tile tile-accent">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L13 9" />
+                </svg>
+              </span>
               <h3>4Router.net</h3>
             </div>
-            <p>登录 4Router 账号，自动同步 API 配置</p>
-            <button id="btn-login-4router-manual" class="btn-primary" style="width:100%;margin-top:12px;">一键配置</button>
+            <p>登录 4Router 账号，自动同步 API 配置。</p>
+            <button id="btn-login-4router-manual" class="btn-primary btn-block">一键配置</button>
           </div>
         </div>
 
         <div class="setup-actions">
-          <button id="btn-save-keys" class="btn-primary">保存并开始</button>
+          <button id="btn-save-keys" class="btn-primary btn-lg">保存并开始</button>
         </div>
       </div>
     </div>
@@ -151,17 +191,30 @@
       <div class="sidebar-section">
         <h4 class="sidebar-title">工具</h4>
         <button class="tool-launch-btn" data-tool="claude-code" id="btn-launch-claude">
-          <span class="tool-icon">🟣</span>
+          <span class="tool-icon tool-icon--claude">
+            <svg class="icon icon-fill" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2.2l2.5 7.3L21.8 12l-7.3 2.5L12 21.8l-2.5-7.3L2.2 12l7.3-2.5L12 2.2z" />
+            </svg>
+          </span>
           <span class="tool-name">Claude Code</span>
           <span class="tool-badge" id="badge-claude"></span>
         </button>
         <button class="tool-launch-btn" data-tool="codex" id="btn-launch-codex">
-          <span class="tool-icon">🟢</span>
+          <span class="tool-icon tool-icon--codex">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8.5 7L4 12l4.5 5M15.5 7l4.5 5-4.5 5" />
+            </svg>
+          </span>
           <span class="tool-name">Codex CLI</span>
           <span class="tool-badge" id="badge-codex"></span>
         </button>
         <button class="tool-launch-btn" data-tool="terminal" id="btn-launch-terminal">
-          <span class="tool-icon">⬛</span>
+          <span class="tool-icon tool-icon--terminal">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="4.5" width="18" height="15" rx="3" />
+              <path d="M7.5 9.5l3 2.7-3 2.7M13.5 15.2h3.5" />
+            </svg>
+          </span>
           <span class="tool-name">Terminal</span>
           <span class="tool-badge" id="badge-terminal">PowerShell</span>
         </button>
@@ -170,7 +223,11 @@
       <div class="sidebar-section">
         <div class="sidebar-section-header">
           <h4 class="sidebar-title">工作目录</h4>
-          <button id="btn-add-cwd" class="btn-add-cwd" title="添加工作目录">+</button>
+          <button id="btn-add-cwd" class="btn-add-cwd" title="添加工作目录">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5.5v13M5.5 12h13" />
+            </svg>
+          </button>
         </div>
         <div id="cwd-list" class="cwd-list">
           <div id="cwd-list-empty" class="cwd-list-empty">点击 + 添加工作目录</div>
@@ -179,15 +236,35 @@
 
       <div class="sidebar-bottom">
         <button id="btn-open-website" class="sidebar-action-btn">
-          <span>🌐</span>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M3.5 12h17M12 3.5c2.3 2.4 3.6 5.3 3.6 8.5s-1.3 6.1-3.6 8.5c-2.3-2.4-3.6-5.3-3.6-8.5s1.3-6.1 3.6-8.5z" />
+          </svg>
           <span>官网</span>
         </button>
         <button id="btn-check-update" class="sidebar-action-btn">
-          <span>🔄</span>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 4v6h-6" />
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L21 10" />
+          </svg>
           <span id="update-status-text">检查更新</span>
         </button>
+        <button id="btn-remote-access" class="sidebar-action-btn local-only">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="2.5" y="4.5" width="13" height="10" rx="2" />
+            <path d="M6 18.5h6" />
+            <rect x="17" y="10.5" width="4.5" height="9" rx="1.5" />
+          </svg>
+          <span>远程访问</span>
+          <span id="remote-badge" class="tool-badge"></span>
+          <span id="remote-dot" class="sidebar-dot hidden"></span>
+        </button>
         <button id="btn-settings" class="sidebar-action-btn">
-          <span>⚙️</span>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 8h8.8M17.2 8H20M4 16h2.8M11.2 16H20" />
+            <circle cx="15" cy="8" r="2.2" />
+            <circle cx="9" cy="16" r="2.2" />
+          </svg>
           <span>设置</span>
         </button>
       </div>
@@ -200,9 +277,31 @@
       </div>
       <div id="terminal-container">
         <div id="empty-state" class="empty-state">
-          <div class="empty-icon">⚡</div>
+          <div class="empty-orb" aria-hidden="true"></div>
+          <img class="empty-mark" src="./icon.png" alt="">
           <h2>选择左侧工具，开始 AI 编程之旅</h2>
-          <p>Claude Code 和 Codex CLI 已就绪</p>
+          <p>Claude Code 与 Codex CLI 已就绪</p>
+          <div class="empty-hints" aria-hidden="true">
+            <span class="hint-chip">
+              <svg class="icon icon-fill" viewBox="0 0 24 24">
+                <path d="M12 2.2l2.5 7.3L21.8 12l-7.3 2.5L12 21.8l-2.5-7.3L2.2 12l7.3-2.5L12 2.2z" />
+              </svg>
+              Claude Code
+            </span>
+            <span class="hint-chip">
+              <svg class="icon" viewBox="0 0 24 24">
+                <path d="M8.5 7L4 12l4.5 5M15.5 7l4.5 5-4.5 5" />
+              </svg>
+              Codex CLI
+            </span>
+            <span class="hint-chip">
+              <svg class="icon" viewBox="0 0 24 24">
+                <rect x="3" y="4.5" width="18" height="15" rx="3" />
+                <path d="M7.5 9.5l3 2.7-3 2.7M13.5 15.2h3.5" />
+              </svg>
+              Terminal
+            </span>
+          </div>
         </div>
       </div>
     </main>
@@ -210,7 +309,12 @@
     <!-- File Explorer Panel (collapsible) -->
     <aside id="file-explorer" class="file-explorer collapsed">
       <div class="file-explorer-header">
-        <button id="btn-toggle-explorer" class="btn-icon" title="Toggle File Explorer">📁</button>
+        <button id="btn-toggle-explorer" class="btn-icon" title="Toggle File Explorer">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+            <path d="M15 4.5v15" />
+          </svg>
+        </button>
         <span id="explorer-path" class="explorer-path">No directory</span>
       </div>
       <div id="file-tree" class="file-tree"></div>
@@ -218,12 +322,36 @@
 
     <!-- Mobile terminal controls: single floating button toggles a bottom panel
          with copy/paste/refresh + Esc + arrow keys (acts on the active tab). -->
-    <button id="mobile-ctrl-toggle" class="mobile-ctrl-toggle" aria-label="终端控制">⌨</button>
+    <button id="mobile-ctrl-toggle" class="mobile-ctrl-toggle" aria-label="终端控制">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2.5" y="6.5" width="19" height="11.5" rx="2" />
+        <path d="M6 10h.01M9.3 10h.01M12.7 10h.01M16 10h.01M18 14.8h.01M8 14.8h7" />
+      </svg>
+    </button>
     <div id="mobile-ctrl-panel" class="mobile-ctrl-panel">
       <div class="mcp-row">
-        <button class="mcp-btn" data-mc="copy">📋 复制</button>
-        <button class="mcp-btn" data-mc="paste">📥 粘贴</button>
-        <button class="mcp-btn" data-mc="refresh">🔄 刷新</button>
+        <button class="mcp-btn" data-mc="copy">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="9.5" y="9.5" width="11" height="11" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          复制
+        </button>
+        <button class="mcp-btn" data-mc="paste">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+            <rect x="8" y="2" width="8" height="4" rx="1" />
+            <path d="M12 10.5v6M9.5 14l2.5 2.5L14.5 14" />
+          </svg>
+          粘贴
+        </button>
+        <button class="mcp-btn" data-mc="refresh">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 4v6h-6" />
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L21 10" />
+          </svg>
+          刷新
+        </button>
         <button class="mcp-btn" data-mc="esc">Esc</button>
       </div>
       <div class="mcp-row">
@@ -248,18 +376,27 @@
     <div class="modal-overlay"></div>
     <div class="modal-content">
       <div class="modal-header">
-        <h2>设置 <span id="settings-app-version" style="font-size:13px;font-weight:normal;color:#8b949e;"></span></h2>
-        <button id="btn-close-settings" class="btn-icon">&times;</button>
+        <h2>设置 <span id="settings-app-version" class="version-chip"></span></h2>
+        <button id="btn-close-settings" class="btn-icon" title="关闭">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
       </div>
       <div class="modal-body">
         <div class="settings-group">
-          <h3>Anthropic (Claude Code)</h3>
+          <h3><span class="group-dot dot-claude"></span>Anthropic · Claude Code</h3>
           <div class="setting-row">
             <label>API Key</label>
             <div class="api-key-input-group">
               <input type="password" id="settings-key-anthropic" class="api-key-input" placeholder="sk-ant-..."
                 autocomplete="off">
-              <button class="btn-toggle-visibility" data-target="settings-key-anthropic">👁</button>
+              <button class="btn-toggle-visibility" data-target="settings-key-anthropic" title="显示/隐藏">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                  <circle cx="12" cy="12" r="2.6" />
+                </svg>
+              </button>
             </div>
           </div>
           <div class="setting-row">
@@ -276,19 +413,24 @@
             <input type="text" id="settings-cc-effort" class="text-input" placeholder="high">
           </div>
           <div class="setting-row">
-            <label>无审批模式(自动同意agent所有操作)</label>
-            <input type="checkbox" id="settings-cc-bypass-permissions">
+            <label>无审批模式<span class="setting-hint">自动同意 Agent 的所有操作</span></label>
+            <input type="checkbox" id="settings-cc-bypass-permissions" class="switch">
           </div>
         </div>
 
         <div class="settings-group">
-          <h3>OpenAI (Codex CLI)</h3>
+          <h3><span class="group-dot dot-codex"></span>OpenAI · Codex CLI</h3>
           <div class="setting-row">
             <label>API Key</label>
             <div class="api-key-input-group">
               <input type="password" id="settings-key-openai" class="api-key-input" placeholder="sk-..."
                 autocomplete="off">
-              <button class="btn-toggle-visibility" data-target="settings-key-openai">👁</button>
+              <button class="btn-toggle-visibility" data-target="settings-key-openai" title="显示/隐藏">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                  <circle cx="12" cy="12" r="2.6" />
+                </svg>
+              </button>
             </div>
           </div>
           <div class="setting-row">
@@ -308,60 +450,41 @@
             <input type="text" id="settings-verbosity" class="text-input" placeholder="high">
           </div>
           <div class="setting-row">
-            <label>无审批模式(自动同意agent所有操作)</label>
-            <input type="checkbox" id="settings-codex-bypass-permissions">
+            <label>无审批模式<span class="setting-hint">自动同意 Agent 的所有操作</span></label>
+            <input type="checkbox" id="settings-codex-bypass-permissions" class="switch">
           </div>
         </div>
 
         <div class="settings-group">
-          <h3>网络代理</h3>
+          <h3><span class="group-dot"></span>网络代理</h3>
           <div class="setting-row">
             <label>HTTP(S) 代理</label>
             <input type="text" id="settings-proxy" class="text-input" placeholder="http://127.0.0.1:7890">
           </div>
         </div>
 
-        <div class="settings-group">
-          <h3>远程访问（Web）</h3>
+        <div class="settings-group web-only">
+          <h3><span class="group-dot"></span>本设备</h3>
           <div class="setting-row">
-            <label>启用远程网页访问</label>
-            <input type="checkbox" id="settings-web-enabled">
-          </div>
-          <div class="setting-row">
-            <label>端口</label>
-            <input type="number" id="settings-web-port" class="text-input small" value="4178" min="1" max="65535">
-          </div>
-          <div class="setting-row">
-            <label>允许局域网访问<br><span style="font-size:11px;color:#8b949e;">关闭仅本机(127.0.0.1)，开启则绑定 0.0.0.0</span></label>
-            <input type="checkbox" id="settings-web-lan">
-          </div>
-          <div class="setting-row">
-            <label>访问令牌 Token（可选）</label>
-            <div class="api-key-input-group">
-              <input type="password" id="settings-web-token" class="api-key-input" placeholder="留空则不校验" autocomplete="off">
-              <button class="btn-toggle-visibility" data-target="settings-web-token">👁</button>
-            </div>
-          </div>
-          <div class="setting-row">
-            <label>访问地址</label>
-            <div id="settings-web-urls" style="font-size:12px;color:#8b949e;font-family:'JetBrains Mono',monospace;word-break:break-all;line-height:1.7;">未启用</div>
+            <label>解除配对<span class="setting-hint">清除本浏览器的接入凭证并退出</span></label>
+            <button id="btn-web-unpair" class="btn-secondary btn-sm">解除并退出</button>
           </div>
         </div>
 
         <div class="settings-group">
-          <h3>外观</h3>
+          <h3><span class="group-dot"></span>外观</h3>
           <div class="setting-row">
             <label>主题</label>
             <select id="settings-theme" class="text-input small">
-              <option value="dark">Dark 🌙</option>
-              <option value="light">Light ☀️</option>
-              <option value="fruit">Fruit 🍊</option>
+              <option value="dark">深邃 · Dark</option>
+              <option value="light">明净 · Light</option>
+              <option value="fruit">果园 · Fruit</option>
             </select>
           </div>
         </div>
 
         <div class="settings-group">
-          <h3>终端</h3>
+          <h3><span class="group-dot"></span>终端</h3>
           <div class="setting-row">
             <label>字体大小</label>
             <input type="number" id="settings-fontsize" class="text-input small" value="14" min="10" max="24">
@@ -373,23 +496,21 @@
         </div>
 
         <div class="settings-group">
-          <h3>调试信息 — 启动参数预览</h3>
+          <h3><span class="group-dot"></span>调试信息 · 启动参数预览</h3>
           <div class="setting-row">
             <label>Claude Code (--settings JSON)</label>
-            <pre id="debug-claude-config" class="debug-preview"
-              style="background:#161b22;color:#8b949e;padding:8px 12px;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:200px;margin:4px 0 0 0;border:1px solid #30363d;">加载中...</pre>
+            <pre id="debug-claude-config" class="debug-preview">加载中...</pre>
           </div>
           <div class="setting-row">
             <label>Codex (-c flags)</label>
-            <pre id="debug-codex-config" class="debug-preview"
-              style="background:#161b22;color:#8b949e;padding:8px 12px;border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:200px;margin:4px 0 0 0;border:1px solid #30363d;">加载中...</pre>
+            <pre id="debug-codex-config" class="debug-preview">加载中...</pre>
           </div>
         </div>
       </div>
       <div class="modal-footer">
-        <button id="btn-reset-settings" class="btn-danger" style="margin-right:auto;" title="清除所有 Key、登录与偏好，返回欢迎页">恢复初始设置</button>
-        <button id="btn-save-settings" class="btn-primary">保存</button>
+        <button id="btn-reset-settings" class="btn-danger" title="清除所有 Key、登录与偏好，返回欢迎页">恢复初始设置</button>
         <button id="btn-cancel-settings" class="btn-secondary">取消</button>
+        <button id="btn-save-settings" class="btn-primary">保存</button>
       </div>
     </div>
   </div>
@@ -397,18 +518,280 @@
   <!-- Config Update Modal -->
   <div id="config-update-modal" class="modal hidden">
     <div class="modal-overlay"></div>
-    <div class="modal-content" style="max-width: 520px;">
+    <div class="modal-content modal-content-sm">
       <div class="modal-header">
-        <h2>🔄 发现新的模型配置</h2>
-        <button id="btn-close-config-modal" class="btn-icon">&times;</button>
+        <h2>发现新的模型配置</h2>
+        <button id="btn-close-config-modal" class="btn-icon" title="关闭">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
       </div>
       <div class="modal-body">
-        <p style="margin-bottom: 12px; opacity: 0.8;">检测到远程推荐配置有更新，以下是变动项：</p>
-        <div id="config-changes-list" style="margin-bottom: 16px;"></div>
+        <p class="modal-desc">检测到远程推荐配置有更新，以下是变动项：</p>
+        <div id="config-changes-list"></div>
       </div>
       <div class="modal-footer">
-        <button id="btn-apply-config" class="btn-primary">应用更新</button>
         <button id="btn-dismiss-config" class="btn-secondary">暂不更新</button>
+        <button id="btn-apply-config" class="btn-primary">应用更新</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remote Access panel — everything about the bridge lives here rather than
+       buried in settings: service state, connect flow, policy, peers, activity. -->
+  <div id="remote-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content modal-content-lg">
+      <div class="modal-header">
+        <h2>远程访问</h2>
+        <span id="remote-state-chip" class="remote-chip">未启用</span>
+        <button id="btn-close-remote" class="btn-icon" title="关闭">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body remote-body">
+
+        <div id="remote-lockdown" class="remote-banner remote-banner-danger hidden">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2.8l7 3v5.4c0 4.6-3 8.4-7 9.9-4-1.5-7-5.3-7-9.9V5.8l7-3z" />
+            <path d="M12 8.5v4M12 15.8h.01" />
+          </svg>
+          <div class="remote-banner-text" id="remote-lockdown-text"></div>
+          <button id="btn-remote-unlock" class="btn-secondary btn-sm">解除</button>
+        </div>
+        <div id="remote-warning" class="remote-banner remote-banner-warn hidden"></div>
+        <!-- Pending access requests (also reachable when the approval modal was missed) -->
+        <div id="remote-requests" class="remote-requests hidden"></div>
+
+        <!-- 服务状态 -->
+        <section class="remote-card">
+          <header class="remote-card-head">
+            <span class="remote-card-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4.8 11.8a10.2 10.2 0 0 1 14.4 0M7.7 14.9a6.2 6.2 0 0 1 8.6 0M12 18.4h.01" />
+              </svg>
+            </span>
+            <h3>服务</h3>
+            <input type="checkbox" id="remote-enabled" class="switch">
+          </header>
+          <div class="remote-card-body">
+            <p id="remote-intro" class="remote-intro">
+              开启后，可在手机或其他电脑的浏览器中实时操作本机的全部终端与 Agent 会话，所有会话在设备间保持同步。
+            </p>
+            <div class="remote-stats">
+              <div class="remote-stat">
+                <span class="remote-stat-value" id="stat-port">—</span>
+                <span class="remote-stat-label">监听端口</span>
+              </div>
+              <div class="remote-stat">
+                <span class="remote-stat-value" id="stat-tls">—</span>
+                <span class="remote-stat-label">传输加密</span>
+              </div>
+              <div class="remote-stat">
+                <span class="remote-stat-value" id="stat-devices">0</span>
+                <span class="remote-stat-label">已配对设备</span>
+              </div>
+              <div class="remote-stat">
+                <span class="remote-stat-value" id="stat-clients">0</span>
+                <span class="remote-stat-label">在线连接</span>
+              </div>
+            </div>
+            <div class="remote-row">
+              <label for="remote-port">监听端口<span class="setting-hint">被占用时自动顺延，以上方速览为准</span></label>
+              <input type="number" id="remote-port" class="text-input small" value="4178" min="1" max="65535">
+            </div>
+          </div>
+        </section>
+
+        <!-- 连接新设备：入口地址 → 配对码，一条动线 -->
+        <section class="remote-card">
+          <header class="remote-card-head">
+            <span class="remote-card-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+            </span>
+            <h3>连接新设备</h3>
+          </header>
+          <div class="remote-card-body">
+            <div class="remote-step">
+              <span class="step-num">1</span>
+              <div class="step-body">
+                <label>在新设备的浏览器打开入口地址<span class="setting-hint">地址含随机路径，猜错路径的扫描只会看到 404</span></label>
+                <div id="remote-urls" class="url-list">
+                  <div class="url-empty">开启服务后生成访问地址</div>
+                </div>
+                <div class="remote-actions">
+                  <button id="btn-remote-rotate-prefix" class="btn-secondary btn-sm">更换入口路径</button>
+                </div>
+              </div>
+            </div>
+            <div class="remote-step">
+              <span class="step-num">2</span>
+              <div class="step-body">
+                <label>输入配对码完成接入<span class="setting-hint">5 分钟内有效、仅可用一次；配对码本身即是授权，无需再次批准</span></label>
+                <div class="pair-display">
+                  <span id="remote-code" class="pair-code">·· ··</span>
+                  <div class="pair-progress" aria-hidden="true"><i id="remote-code-bar"></i></div>
+                  <span id="remote-code-left" class="pair-left">尚未生成配对码</span>
+                </div>
+                <div class="remote-actions">
+                  <button id="btn-remote-gen-code" class="btn-primary btn-sm">生成配对码</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 安全防线 -->
+        <section class="remote-card">
+          <header class="remote-card-head">
+            <span class="remote-card-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 2.8l7 3v5.4c0 4.6-3 8.4-7 9.9-4-1.5-7-5.3-7-9.9V5.8l7-3z" />
+              </svg>
+            </span>
+            <h3>安全防线</h3>
+          </header>
+          <div class="remote-card-body">
+            <div class="remote-field">
+              <label>访问令牌<span class="setting-hint">配对码之外的备用凭证；用它接入仍需你在本机点「允许」</span></label>
+              <div class="api-key-input-group">
+                <input type="password" id="remote-token" class="api-key-input" readonly autocomplete="off">
+                <button class="btn-toggle-visibility" data-target="remote-token" title="显示/隐藏">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="2.6" />
+                  </svg>
+                </button>
+                <button id="btn-remote-copy-token" class="btn-input-action" title="复制">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9.5" y="9.5" width="11" height="11" rx="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                </button>
+                <button id="btn-remote-rotate-token" class="btn-input-action" title="重新生成（已配对设备不受影响）">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M21 4v6h-6" />
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L21 10" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="remote-row">
+              <label>新设备需本机批准
+                <span class="setting-hint">凭令牌接入时必须在本机确认，是令牌泄露后的最后一道防线</span>
+              </label>
+              <input type="checkbox" id="remote-approval" class="switch">
+            </div>
+            <div class="remote-row">
+              <label>内置 HTTPS
+                <span class="setting-hint">由内置的本地根证书（CA）签发 TLS 证书；把根证书加入系统信任后，浏览器不再提示“不安全”</span>
+              </label>
+              <input type="checkbox" id="remote-https" class="switch">
+            </div>
+            <div class="remote-field hidden" id="remote-cert-field">
+              <label>证书与信任
+                <span class="setting-hint">本机点「信任根证书」即可让浏览器显示安全锁；手机等其他设备可通过下方地址下载根证书并安装，效果相同</span>
+              </label>
+              <div id="remote-cert" class="cert-box">—</div>
+              <div class="remote-actions">
+                <button id="btn-remote-trust-ca" class="btn-secondary btn-sm">信任根证书（本机）</button>
+                <button id="btn-remote-export-ca" class="btn-secondary btn-sm">导出根证书…</button>
+                <button id="btn-remote-copy-cert" class="btn-secondary btn-sm">复制指纹</button>
+                <button id="btn-remote-regen-cert" class="btn-secondary btn-sm">重新签发证书</button>
+              </div>
+            </div>
+            <div class="remote-field">
+              <label>公网访问域名<span class="setting-hint">通过隧道或反向代理访问时填入对外域名，逗号分隔</span></label>
+              <input type="text" id="remote-hosts" class="text-input" placeholder="cc.example.com" autocomplete="off">
+            </div>
+            <div class="remote-field">
+              <label>受信任网段
+                <span class="setting-hint">网络层已加密的专网 CIDR（如 Tailscale、WireGuard）。这些网段可跳过加密检查，普通局域网请勿填入</span>
+              </label>
+              <input type="text" id="remote-networks" class="text-input" placeholder="100.64.0.0/10" autocomplete="off">
+              <div class="remote-actions">
+                <button class="btn-secondary btn-sm" data-preset-network="100.64.0.0/10">添加 Tailscale 网段</button>
+              </div>
+            </div>
+            <div id="remote-lockouts" class="remote-lockouts hidden"></div>
+            <div class="remote-note">
+              所有连接一视同仁地经过四道检查：加密传输、随机入口路径、接入凭证、本机批准。
+              除本机自身访问外，未加密的连接一律拒绝，且没有关闭这条规则的开关——明文意味着同一网络里的任何人都能截获凭证并完全控制本机。
+            </div>
+          </div>
+        </section>
+
+        <!-- 设备：配对记录与在线状态合一 -->
+        <section class="remote-card">
+          <header class="remote-card-head">
+            <span class="remote-card-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="2.5" y="4.5" width="13" height="10" rx="2" />
+                <path d="M6 18.5h6" />
+                <rect x="17" y="10.5" width="4.5" height="9" rx="1.5" />
+              </svg>
+            </span>
+            <h3>设备</h3>
+            <span id="remote-peers-count" class="count-chip"></span>
+            <div class="head-actions">
+              <button id="btn-remote-kick-all" class="btn-link-danger">全部断开</button>
+              <button id="btn-remote-revoke-all" class="btn-link-danger">全部撤销</button>
+            </div>
+          </header>
+          <div class="remote-card-body">
+            <div id="remote-devices" class="peer-list">
+              <div class="peer-empty">尚无配对设备 — 在上方生成配对码即可接入</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 活动记录 -->
+        <section class="remote-card">
+          <header class="remote-card-head">
+            <span class="remote-card-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 12h4l3-7.5 4 15 3-7.5h4" />
+              </svg>
+            </span>
+            <h3>活动记录</h3>
+            <span id="remote-audit-count" class="count-chip"></span>
+            <div class="head-actions">
+              <button id="btn-remote-clear-audit" class="btn-link-danger">清空</button>
+            </div>
+          </header>
+          <div class="remote-card-body">
+            <div id="remote-audit" class="remote-audit">暂无记录</div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Remote device access approval — shown on the host when a client presents
+       the master token and is waiting to be let in. -->
+  <div id="web-access-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content modal-content-sm">
+      <div class="modal-header">
+        <h2>远程设备请求接入</h2>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc web-access-warn">
+          允许后该设备将获得与本机相同的操作权限，包括终端与 Agent 的完整执行能力。若不是你本人发起，请拒绝。
+        </p>
+        <div id="web-access-info" class="web-access-info"></div>
+        <div id="web-access-countdown" class="web-access-countdown"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-web-deny" class="btn-secondary">拒绝</button>
+        <button id="btn-web-approve" class="btn-danger">允许接入</button>
       </div>
     </div>
   </div>
@@ -420,7 +803,11 @@
       <div class="modal-header">
         <h2>登录 4Router</h2>
         <span id="auth-modal-status" class="auth-modal-status">等待登录…</span>
-        <button id="btn-close-auth-modal" class="btn-icon" title="关闭">&times;</button>
+        <button id="btn-close-auth-modal" class="btn-icon" title="关闭">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
       </div>
       <div class="auth-modal-body">
         <webview id="auth-webview" partition="auth-4router" src="about:blank" allowpopups></webview>
