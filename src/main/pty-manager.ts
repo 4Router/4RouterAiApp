@@ -83,6 +83,21 @@ function windowsShellPath(): string {
     return fs.existsSync(pwsh) ? pwsh : 'powershell.exe';
 }
 
+/** Builds the PowerShell `-Command` string that launches a bundled tool.
+ *
+ *  `colorPrelude` runs first so the console's default attributes match the app
+ *  theme before the tool inspects them -- see
+ *  ToolManager.windowsConsoleColorPrelude for why that matters. */
+export function buildWindowsToolCommand(bin: string, args: string[], colorPrelude = ''): string {
+    const cmdParts = colorPrelude ? [colorPrelude] : [];
+    cmdParts.push(`& "${bin}"`);
+    for (const arg of args) {
+        const escaped = arg.replace(/'/g, "''");
+        cmdParts.push(`'${escaped}'`);
+    }
+    return cmdParts.join(' ');
+}
+
 export class PtyManager {
     private sessions: Map<string, PtySession> = new Map();
     private dataCallbacks: DataCallback[] = [];
@@ -179,12 +194,11 @@ export class PtyManager {
             const env = { ...toolBaseEnv, ...launchConfig.env };
 
             if (isWin) {
-                const cmdParts = [`& "${launchConfig.bin}"`];
-                for (const arg of launchConfig.args) {
-                    const escaped = arg.replace(/'/g, "''");
-                    cmdParts.push(`'${escaped}'`);
-                }
-                const fullCommand = cmdParts.join(' ');
+                const fullCommand = buildWindowsToolCommand(
+                    launchConfig.bin,
+                    launchConfig.args,
+                    this.toolManager.windowsConsoleColorPrelude(),
+                );
                 console.log(`  powershell cmd: ${fullCommand}`);
 
                 pty = spawnPty(windowsShellPath(), [

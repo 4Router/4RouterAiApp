@@ -292,6 +292,31 @@ export class ToolManager {
         return null;
     }
 
+    /** PowerShell statements that align the ConPTY console's default colors
+     *  with the app theme, prepended to every Windows tool launch.
+     *
+     *  Codex >=0.148 stopped asking the terminal for its colors on Windows
+     *  (it never sends OSC 10/11 there) and instead reads the console screen
+     *  buffer: `GetConsoleScreenBufferInfoEx` -> wAttributes + ColorTable,
+     *  see codex tui/src/terminal_probe.rs. PowerShell initialises those
+     *  attributes to its own host colors -- grey on black -- so codex decides
+     *  the terminal is dark: it paints the composer with
+     *  blend(white, bg, 0.12) ~ #292929 and picks pale accent colors. Under
+     *  the light xterm.js theme that renders as a black band with black
+     *  (default-foreground) text in it -- the user cannot see what they type.
+     *
+     *  RawUI only speaks the 16 legacy console colors, so the console default
+     *  is the nearest of White/Black; codex derives its surfaces from that and
+     *  lands on the same side as the terminal it is actually drawn in. */
+    windowsConsoleColorPrelude(): string {
+        const theme = (this.configStore.get('theme') as string) || '';
+        // 'light' and 'fruit' are both light-background themes.
+        const isDark = theme === 'dark';
+        const background = isDark ? 'Black' : 'White';
+        const foreground = isDark ? 'Gray' : 'Black';
+        return `$Host.UI.RawUI.BackgroundColor='${background}'; $Host.UI.RawUI.ForegroundColor='${foreground}';`;
+    }
+
     listTools(): ToolInfo[] {
         this.detectTools();
         return this.toolDefinitions;

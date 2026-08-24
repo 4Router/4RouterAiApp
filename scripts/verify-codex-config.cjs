@@ -118,6 +118,34 @@ check('auth flag still present after a merge',
     /^requires_openai_auth = true$/m.test(second.config));
 check('bypass keys follow the store', !second.config.includes('approval_policy'));
 
+console.log('');
+console.log('[4] Windows console colors match the app theme');
+// Codex >=0.148 reads the console screen buffer's default attributes instead of
+// asking the terminal (tui/src/terminal_probe.rs). PowerShell seeds those with
+// grey-on-black, so without this prelude codex paints the composer near-black
+// and the user's own keystrokes -- drawn in the default foreground -- vanish
+// into it under the light xterm theme.
+const { buildWindowsToolCommand } = require('../dist/main/pty-manager');
+
+function preludeFor(theme) {
+    return new ToolManager(makeBundledTools(), makeStore({ theme })).windowsConsoleColorPrelude();
+}
+
+const lightPrelude = preludeFor('light');
+check('light theme -> white console background', lightPrelude.includes("BackgroundColor='White'"), lightPrelude);
+check('light theme -> black console foreground', lightPrelude.includes("ForegroundColor='Black'"), lightPrelude);
+check('fruit theme is treated as light', preludeFor('fruit') === lightPrelude);
+check('unset theme is treated as light', preludeFor(undefined) === lightPrelude);
+const darkPrelude = preludeFor('dark');
+check('dark theme -> black console background', darkPrelude.includes("BackgroundColor='Black'"), darkPrelude);
+check('dark theme -> grey console foreground', darkPrelude.includes("ForegroundColor='Gray'"), darkPrelude);
+
+const command = buildWindowsToolCommand('C:/tools/node.exe', ['app.js', "it's"], lightPrelude);
+check('prelude runs before the tool', command.indexOf('RawUI') < command.indexOf('& "'), command);
+check('tool path is quoted', command.includes('& "C:/tools/node.exe"'), command);
+check('single quotes in args are doubled', command.includes("'it''s'"), command);
+check('no prelude means no leading statement', buildWindowsToolCommand('node.exe', []) === '& "node.exe"');
+
 console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`);
 fs.rmSync(APPDATA, { recursive: true, force: true });
 process.exit(failed === 0 ? 0 : 1);
