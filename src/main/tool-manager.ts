@@ -472,6 +472,17 @@ export class ToolManager {
                 lines.push(`name = "${providerName}"`);
                 lines.push(`base_url = "${baseUrl}"`);
                 lines.push(`wire_api = "responses"`);
+                // Codex >=0.148 sends NO Authorization header for a custom
+                // provider unless the provider opts into one of its auth
+                // mechanisms — see model-provider/src/auth.rs:
+                //   if !provider.requires_openai_auth && provider.auth.is_none()
+                //       { return unauthenticated_auth_provider() }
+                // Without this flag every request fails with
+                // `401 Unauthorized: 未提供令牌`. Setting it makes codex read the
+                // key from auth.json (auth_mode = "apikey", written below),
+                // which keeps the key out of the child process environment.
+                // Accepted by older releases too (verified on 0.147.0).
+                lines.push('requires_openai_auth = true');
             }
 
             lines.push('');
