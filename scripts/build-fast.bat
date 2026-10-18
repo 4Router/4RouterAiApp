@@ -2,6 +2,14 @@
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
+:: A double-clicked script runs as  cmd /c ""<script>" "  and its window closes on exit
+set "PAUSE_ON_EXIT="
+set "CMDLINE=!cmdcmdline:"=?!"
+if not "!CMDLINE:?%~f0? =!"=="!CMDLINE!" set "PAUSE_ON_EXIT=1"
+
+:: Double-clicking starts in scripts\, but every path below is relative to the project root
+cd /d "%~dp0.."
+
 echo.
 echo === 4RouterAi Fast Build (unpack only) ===
 echo.
@@ -24,7 +32,7 @@ echo [3/6] Compiling TypeScript...
 call npx tsc -p tsconfig.main.json
 if %errorlevel% neq 0 (
     echo [FAILED] TypeScript compile failed!
-    exit /b 1
+    goto :fail
 )
 echo   tsc OK
 
@@ -33,7 +41,7 @@ echo [4/6] Building Vite...
 call npx vite build
 if %errorlevel% neq 0 (
     echo [FAILED] Vite build failed!
-    exit /b 1
+    goto :fail
 )
 echo   vite OK
 
@@ -42,7 +50,7 @@ echo [5/6] Bundling Node.js runtime and CLI tools...
 call node scripts\bundle-tools.mjs
 if %errorlevel% neq 0 (
     echo [FAILED] Bundled runtime/tools failed!
-    exit /b 1
+    goto :fail
 )
 echo   bundled tools OK
 
@@ -59,7 +67,7 @@ if %errorlevel% neq 0 (
     call npx electron-builder --win dir --config.win.requestedExecutionLevel=asInvoker
     if !errorlevel! neq 0 (
         echo [FAILED] Package failed!
-        exit /b 1
+        goto :fail
     )
 )
 
@@ -69,7 +77,13 @@ if exist "release\win-unpacked\4RouterAi.exe" (
     echo   Output: release\win-unpacked\
     echo   Run:    release\win-unpacked\4RouterAi.exe
 ) else (
-    echo === Fast Build Complete (exe not found) ===
+    echo === Fast Build Complete ^(exe not found^) ===
 )
 
+if defined PAUSE_ON_EXIT pause
 endlocal
+exit /b 0
+
+:fail
+if defined PAUSE_ON_EXIT pause
+exit /b 1
