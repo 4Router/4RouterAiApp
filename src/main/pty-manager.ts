@@ -85,12 +85,13 @@ function windowsShellPath(): string {
 
 /** Builds the PowerShell `-Command` string that launches a bundled tool.
  *
- *  `colorPrelude` runs first so the console's default attributes match the app
- *  theme before the tool inspects them -- see
- *  ToolManager.windowsConsoleColorPrelude for why that matters. */
-export function buildWindowsToolCommand(bin: string, args: string[], colorPrelude = ''): string {
-    const cmdParts = colorPrelude ? [colorPrelude] : [];
-    cmdParts.push(`& "${bin}"`);
+ *  Leave the console colors at their defaults: ConPTY forwards any non-default
+ *  console attribute (e.g. `$Host.UI.RawUI.BackgroundColor`) to xterm.js as an
+ *  explicit palette color, and the tool's first screen clear then floods the
+ *  whole terminal with it. The tools learn the theme colors from xterm.js
+ *  itself (OSC 10/11), which ConPTY passes through. */
+export function buildWindowsToolCommand(bin: string, args: string[]): string {
+    const cmdParts = [`& "${bin}"`];
     for (const arg of args) {
         const escaped = arg.replace(/'/g, "''");
         cmdParts.push(`'${escaped}'`);
@@ -194,11 +195,7 @@ export class PtyManager {
             const env = { ...toolBaseEnv, ...launchConfig.env };
 
             if (isWin) {
-                const fullCommand = buildWindowsToolCommand(
-                    launchConfig.bin,
-                    launchConfig.args,
-                    this.toolManager.windowsConsoleColorPrelude(),
-                );
+                const fullCommand = buildWindowsToolCommand(launchConfig.bin, launchConfig.args);
                 console.log(`  powershell cmd: ${fullCommand}`);
 
                 pty = spawnPty(windowsShellPath(), [
