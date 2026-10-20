@@ -69,8 +69,15 @@ const codexHome = path.join(APPDATA, '4RouterAi', 'codex-home');
 const configFile = path.join(codexHome, 'config.toml');
 const authFile = path.join(codexHome, 'auth.json');
 
-function launch(store) {
-    const manager = new ToolManager(makeBundledTools(), store);
+function launch(store, codexVersion) {
+    const toolsRoot = makeBundledTools();
+    const pkgJson = path.join(toolsRoot, 'codex', 'node_modules', '@openai', 'codex', 'package.json');
+    if (codexVersion) {
+        fs.writeFileSync(pkgJson, JSON.stringify({ name: '@openai/codex', version: codexVersion }));
+    } else {
+        fs.rmSync(pkgJson, { force: true });
+    }
+    const manager = new ToolManager(toolsRoot, store);
     const launchConfig = manager.getLaunchConfig('codex');
     return { launchConfig, config: fs.readFileSync(configFile, 'utf-8') };
 }
@@ -118,8 +125,17 @@ check('auth flag still present after a merge',
     /^requires_openai_auth = true$/m.test(second.config));
 check('bypass keys follow the store', !second.config.includes('approval_policy'));
 
+console.log('\n[4] Shared background daemon stays off');
+// A daemon keeps the API key and proxy it started with, and on Windows a stale
+// daemon.pid whose PID got reused aborts startup with os error 5.
+const noDaemon = (version) => launch(makeStore(), version).launchConfig.args.includes('--no-daemon');
+check('--no-daemon on 0.163.0', noDaemon('0.163.0'));
+check('--no-daemon on 0.156.0 (first release with the flag)', noDaemon('0.156.0'));
+check('no --no-daemon on 0.155.0 (flag would be rejected)', !noDaemon('0.155.0'));
+check('no --no-daemon when the version is unknown', !noDaemon(undefined));
+
 console.log('');
-console.log('[4] Windows launch command');
+console.log('[5] Windows launch command');
 // ConPTY forwards non-default console attributes to xterm.js as explicit
 // palette colors, so a RawUI color prelude here paints the tools' screens with
 // the theme's ANSI white (grey under the light theme). Codex learns the theme

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { buildSanitizedEnv } from './process-env';
-import { isNewerVersion } from './version-compare';
+import { compareVersions, isNewerVersion } from './version-compare';
 
 export interface ToolInfo {
     id: string;
@@ -33,6 +33,9 @@ interface ResolvedToolPath {
 
 const OFFICIAL_REGISTRY = 'https://registry.npmjs.org/';
 const CHINA_MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
+
+/** First Codex release with `--no-daemon`; older releases reject the flag. */
+const CODEX_NO_DAEMON_MIN_VERSION = '0.156.0';
 
 /**
  * Extract user-managed sections from an existing Codex config.toml,
@@ -519,6 +522,16 @@ export class ToolManager {
                 const authFile = path.join(codexHomeDir, 'auth.json');
                 fs.writeFileSync(authFile, JSON.stringify(authJson, null, 2), 'utf-8');
                 console.log(`[ToolManager] Wrote Codex auth to ${authFile}`);
+            }
+
+            // Since 0.157 Codex attaches the TUI to a shared background daemon
+            // that outlives the session, runs its own auto-updated codex copy, and
+            // keeps the API key and proxy env it was started with — key or proxy
+            // changes made here wouldn't reach it until it restarts. On Windows it
+            // also aborts startup with `failed to open daemon process (os error 5)`
+            // once a stale daemon.pid names a PID reused by a process we can't open.
+            if (tool.version && compareVersions(tool.version, CODEX_NO_DAEMON_MIN_VERSION) >= 0) {
+                args.push('--no-daemon');
             }
         }
 
