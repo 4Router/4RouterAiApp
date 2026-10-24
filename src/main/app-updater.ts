@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { isNewerVersion } from './version-compare';
+import { pickInstallerAsset, verifyDownloadedAsset, ReleaseAsset } from './update-integrity';
 
 const GITHUB_API_URL = 'https://api.github.com/repos/4Router/4RouterAiApp/releases/latest';
 const REMOTE_CONFIG_URL = 'https://raw.githubusercontent.com/4Router/4RouterAiApp/main/remote-config.json';
@@ -159,6 +160,8 @@ function testMirrorSpeed(mirrorBaseUrl: string, downloadUrl: string, timeoutMs: 
 export class AppUpdater {
     private configStore: ConfigStore;
     private mainWindow: BrowserWindow | null = null;
+    /** Installer of the release last seen by checkForUpdate — the only thing downloadUpdate will fetch. */
+    private latestAsset: ReleaseAsset | null = null;
 
     constructor(configStore: ConfigStore) {
         this.configStore = configStore;
@@ -187,16 +190,10 @@ export class AppUpdater {
             const latestVersion = (release.tag_name || '').replace(/^v/, '');
             const releaseNotes = release.body || '';
 
-            // Find .exe asset for Windows
-            let downloadUrl = '';
-            if (release.assets && Array.isArray(release.assets)) {
-                const exeAsset = release.assets.find((a: any) =>
-                    a.name && (a.name.endsWith('.exe') || a.name.endsWith('.zip')) && a.browser_download_url
-                );
-                if (exeAsset) {
-                    downloadUrl = exeAsset.browser_download_url;
-                }
-            }
+            // Find .exe asset for Windows, remembering its published digest
+            // so the download can be verified no matter which mirror serves it.
+            this.latestAsset = pickInstallerAsset(release.assets);
+            const downloadUrl = this.latestAsset?.url || '';
 
             // Only a strictly newer release counts. Comparing for inequality
             // used to flag a *downgrade* as an update whenever the local build
@@ -213,9 +210,9 @@ export class AppUpdater {
     }
 
     /**
-     * Speed-test all proxy mirrors and return the fastest one.
+     * Speed-test all proxy mirrors and return the responsive ones, fastest first.
      */
-    async findFastestProxy(downloadUrl: string): Promise<string> {
+    async rankProxies(downloadUrl: string): Promise<string[]> {
         console.log(`[AppUpdater] Speed testing ${PROXY_MIRRORS.length} proxy mirrors...`);
 
         this.sendProgress(-1, '正在测速选择最快的下载节点...');
@@ -227,40 +224,67 @@ export class AppUpdater {
         // Sort by response time
         results.sort((a, b) => a.timeMs - b.timeMs);
 
-        const best = results[0];
-        if (best && best.timeMs !== Infinity) {
-            console.log(`[AppUpdater] Fastest mirror: ${best.name} (${best.timeMs}ms)`);
-            return best.url;
+        const alive = results.filter(r => r.timeMs !== Infinity);
+        if (alive.length > 0) {
+            console.log(`[AppUpdater] Fastest mirror: ${alive[0].name} (${alive[0].timeMs}ms)`);
+        } else {
+            console.log('[AppUpdater] No proxy mirrors responded');
         }
-
-        // Fallback: try direct download URL
-        console.log('[AppUpdater] No proxy mirrors responded, falling back to direct URL');
-        return downloadUrl;
+        return alive.map(r => r.url);
     }
 
     /**
-     * Download update installer via the fastest proxy mirror.
+     * Download the update installer, verify it against the digest GitHub
+     * published for the asset, and only then launch it.
+     *
+     * Mirrors are third-party proxies, so a download from one is never trusted
+     * on its own: a mismatch discards the file and moves on to the next mirror,
+     * ending with the direct github.com URL. A release without a published
+     * digest skips the mirrors entirely and is fetched from GitHub directly.
      */
     async downloadUpdate(downloadUrl: string): Promise<DownloadResult> {
-        try {
-            // Step 1: Find fastest proxy
-            const finalUrl = await this.findFastestProxy(downloadUrl);
-            console.log(`[AppUpdater] Downloading from: ${finalUrl}`);
+        const asset = this.latestAsset;
+        if (!asset || asset.url !== downloadUrl) {
+            return { success: false, error: '更新信息已过期，请重新检查更新' };
+        }
 
-            // Step 2: Download the file
-            const fileName = path.basename(new URL(downloadUrl).pathname) || '4RouterAi-Setup.exe';
+        try {
+            // Step 1: Pick download sources
+            const MAX_MIRROR_ATTEMPTS = 3;
+            const sources = asset.sha256
+                ? [...(await this.rankProxies(asset.url)).slice(0, MAX_MIRROR_ATTEMPTS), asset.url]
+                : [asset.url];
+            if (!asset.sha256) {
+                console.warn('[AppUpdater] Release asset has no published digest; downloading from GitHub directly');
+            }
+
+            const fileName = path.basename(new URL(asset.url).pathname) || '4RouterAi-Setup.exe';
             const filePath = path.join(os.tmpdir(), fileName);
 
-            this.sendProgress(0, `正在下载 ${fileName}...`);
+            // Step 2: Download and verify, falling through to the next source on failure
+            let lastError: unknown = null;
+            for (const sourceUrl of sources) {
+                console.log(`[AppUpdater] Downloading from: ${sourceUrl}`);
+                this.sendProgress(0, `正在下载 ${fileName}...`);
+                try {
+                    await this.downloadFile(sourceUrl, filePath);
+                    this.sendProgress(100, '正在校验安装包...');
+                    await verifyDownloadedAsset(filePath, asset);
+                } catch (err) {
+                    console.error(`[AppUpdater] Download from ${sourceUrl} rejected:`, err);
+                    fs.rmSync(filePath, { force: true });
+                    lastError = err;
+                    continue;
+                }
 
-            await this.downloadFile(finalUrl, filePath);
+                this.sendProgress(100, '下载完成！');
 
-            this.sendProgress(100, '下载完成！');
+                // Step 3: Open the verified file
+                shell.openPath(filePath);
 
-            // Step 3: Open the downloaded file
-            shell.openPath(filePath);
-
-            return { success: true, filePath };
+                return { success: true, filePath };
+            }
+            throw lastError ?? new Error('没有可用的下载源');
         } catch (err: any) {
             console.error('[AppUpdater] Download failed:', err);
             return { success: false, error: err.message || String(err) };
@@ -323,9 +347,21 @@ export class AppUpdater {
                     }
                 });
 
-                file.on('finish', () => {
-                    file.close();
-                    resolve();
+                // Resolve on 'close', not 'finish': the handle must be released
+                // before the file is hashed and handed to the installer.
+                file.on('close', () => {
+                    if (totalBytes > 0 && downloadedBytes !== totalBytes) {
+                        reject(new Error(`下载不完整（${downloadedBytes}/${totalBytes} 字节）`));
+                    } else {
+                        resolve();
+                    }
+                });
+
+                // pipe() does not forward source errors; a connection dropped
+                // mid-body would otherwise leave this promise pending forever.
+                res.on('error', (err) => {
+                    file.destroy();
+                    reject(err);
                 });
 
                 file.on('error', (err) => {
