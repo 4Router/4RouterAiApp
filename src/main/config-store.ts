@@ -183,6 +183,17 @@ export class ConfigStore {
         }
     }
 
+    /**
+     * Forget a provider's API key. Storing '' instead does not work: both the
+     * encrypted and the `plain:` form of an empty string are non-empty, so
+     * hasApiKey() would keep reporting the key as present.
+     */
+    removeApiKey(provider: string): void {
+        const encryptedKeys = this.store.get('encryptedKeys', {});
+        delete encryptedKeys[provider];
+        this.store.set('encryptedKeys', encryptedKeys);
+    }
+
     hasApiKey(provider: string): boolean {
         const encryptedKeys = this.store.get('encryptedKeys', {});
         return !!encryptedKeys[provider];
