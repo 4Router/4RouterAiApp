@@ -4,6 +4,23 @@ import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { buildSanitizedEnv } from './process-env';
 import { compareVersions, isNewerVersion } from './version-compare';
+import {
+    OFFICIAL_REGISTRY,
+    CHINA_MIRROR_REGISTRY,
+    NPM_INSTALL_TIMEOUT_MS,
+    NPM_VIEW_TIMEOUT_MS,
+    RegistryProbe,
+    buildNpmInstallArgs,
+    buildNpmNetworkArgs,
+    describeInstallTimeout,
+    isTimeoutKill,
+    pickTargetVersion,
+    planInstall,
+    platformInstallSpec,
+    platformPackageName,
+    platformVersionMatches,
+    registryLabel,
+} from './npm-install-plan';
 
 export interface ToolInfo {
     id: string;
@@ -17,6 +34,8 @@ export interface ToolInfo {
     available: boolean;
     version?: string;
     source?: 'bundled' | 'global';
+    /** Bundled, but its native-binary package is missing — launching would fail. */
+    broken?: boolean;
 }
 
 export interface LaunchConfig {
@@ -30,9 +49,6 @@ interface ResolvedToolPath {
     source: 'bundled' | 'global';
     launchMode: 'node-script' | 'command';
 }
-
-const OFFICIAL_REGISTRY = 'https://registry.npmjs.org/';
-const CHINA_MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
 
 /** First Codex release with `--no-daemon`; older releases reject the flag. */
 const CODEX_NO_DAEMON_MIN_VERSION = '0.156.0';
@@ -118,6 +134,12 @@ export class ToolManager {
         },
     ];
 
+    /**
+     * Runs the bundled npm. A field rather than a direct call so
+     * scripts/verify-tool-update.cjs can stub it without spawning npm.
+     */
+    private runFile: typeof import('child_process').execFile = require('child_process').execFile;
+
     constructor(
         private bundledToolsPath: string,
         private configStore: ConfigStore
@@ -149,6 +171,38 @@ export class ToolManager {
                     }
                 } catch { /* best-effort */ }
             }
+
+            tool.broken = tool.available && tool.source === 'bundled' && !this.platformPackageOk(tool.id);
+            if (tool.broken) {
+                console.warn(`[ToolManager] ${tool.id}: native binary package missing or mismatched — needs repair`);
+            }
+        }
+    }
+
+    private getPackageName(toolId: string): string {
+        return toolId === 'claude-code' ? '@anthropic-ai/claude-code' : '@openai/codex';
+    }
+
+    /**
+     * Whether the native-binary package the launcher needs is really there:
+     * its package.json present (what cli-wrapper.cjs / codex.js resolve) and
+     * built for the installed main version. A bare directory isn't enough —
+     * a half-finished update can leave one behind.
+     */
+    private platformPackageOk(toolId: string): boolean {
+        const packageName = this.getPackageName(toolId);
+        const platformPkg = platformPackageName(packageName, os.platform(), os.arch());
+        if (!platformPkg) return true; // no native package for this platform
+        const nodeModules = path.join(this.getToolDir(toolId), 'node_modules');
+        try {
+            const read = (name: string) =>
+                JSON.parse(fs.readFileSync(path.join(nodeModules, ...name.split('/'), 'package.json'), 'utf-8'));
+            const ok = platformVersionMatches(read(platformPkg).version, read(packageName).version);
+            console.log(`[ToolManager] ${toolId} platform package ${platformPkg}: ${ok ? 'ok' : 'version mismatch'}`);
+            return ok;
+        } catch {
+            console.log(`[ToolManager] ${toolId} platform package ${platformPkg}: missing`);
+            return false;
         }
     }
 
@@ -573,11 +627,12 @@ export class ToolManager {
             return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
         }
 
-        // Same unified registry strategy as updateTool: official first,
-        // npmmirror as the mainland-China fallback. Keeping the two paths
-        // identical avoids "version seen" ≠ "version installed" mismatches.
-        const latest = await this.npmViewVersion(packageName, OFFICIAL_REGISTRY)
-            ?? await this.npmViewVersion(packageName, CHINA_MIRROR_REGISTRY);
+        // Same version choice as updateTool (pickTargetVersion): official
+        // registry's latest, npmmirror's only when the official one can't be
+        // reached. updateTool then pins that exact version, so the version
+        // seen here is the version that gets installed.
+        const [official, mirror] = await this.probeLatestVersions(packageName);
+        const latest = pickTargetVersion(official, mirror);
         if (!latest) {
             return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
         }
@@ -589,12 +644,36 @@ export class ToolManager {
         return { hasUpdate, currentVersion: tool.version, latestVersion: latest };
     }
 
+    /** The settings-page proxy (e.g. http://127.0.0.1:7890), if any. */
+    private getProxy(): string | undefined {
+        const proxy = (this.configStore.get('proxy') as string | undefined)?.trim();
+        return proxy || undefined;
+    }
+
+    /**
+     * Ask both registries for `latest` at the same time and time each
+     * answer. Concurrent, so an unreachable official registry costs one
+     * NPM_VIEW_TIMEOUT_MS instead of delaying the mirror query behind it.
+     * Going through npm (rather than a hand-rolled HTTPS GET) means the
+     * probe uses the same proxy handling as the install that follows.
+     */
+    private probeLatestVersions(packageName: string): Promise<[RegistryProbe, RegistryProbe]> {
+        const probe = async (registry: string): Promise<RegistryProbe> => {
+            const start = Date.now();
+            const version = await this.npmViewVersion(packageName, registry);
+            return { registry, version, elapsedMs: Date.now() - start };
+        };
+        return Promise.all([probe(OFFICIAL_REGISTRY), probe(CHINA_MIRROR_REGISTRY)]);
+    }
+
     private npmViewVersion(packageName: string, registry: string): Promise<string | null> {
         return new Promise((resolve) => {
-            const { execFile } = require('child_process') as typeof import('child_process');
-            const args = [this.getBundledNpmCli(), 'view', packageName, 'version', '--registry', registry];
-            execFile(this.getBundledNodeExecutable(), args, {
-                timeout: 15000,
+            const args = [
+                this.getBundledNpmCli(), 'view', packageName, 'version',
+                ...buildNpmNetworkArgs(registry, this.getProxy()),
+            ];
+            this.runFile(this.getBundledNodeExecutable(), args, {
+                timeout: NPM_VIEW_TIMEOUT_MS,
                 windowsHide: true,
                 env: buildSanitizedEnv(this.buildRuntimeEnv()),
             }, (error, stdout) => {
@@ -603,13 +682,38 @@ export class ToolManager {
         });
     }
 
+    /** `optionalDependencies` of an exact version, or null if the query failed. */
+    private npmViewOptionalDeps(spec: string, registry: string): Promise<Record<string, string> | null> {
+        return new Promise((resolve) => {
+            const args = [
+                this.getBundledNpmCli(), 'view', spec, 'optionalDependencies', '--json',
+                ...buildNpmNetworkArgs(registry, this.getProxy()),
+            ];
+            this.runFile(this.getBundledNodeExecutable(), args, {
+                timeout: NPM_VIEW_TIMEOUT_MS,
+                windowsHide: true,
+                env: buildSanitizedEnv(this.buildRuntimeEnv()),
+            }, (error, stdout) => {
+                try {
+                    resolve(error ? null : JSON.parse(stdout));
+                } catch {
+                    resolve(null);
+                }
+            });
+        });
+    }
+
     /**
      * Update a bundled tool to the latest version by running
-     * `npm install <package>@latest` in the tool's bundled directory.
+     * `npm install <package>@<version>` in the tool's bundled directory.
      */
     async updateTool(toolId: string): Promise<{ success: boolean; version?: string; error?: string }> {
         const tool = this.toolDefinitions.find(t => t.id === toolId);
         if (!tool) return { success: false, error: 'Unknown tool' };
+
+        if (!this.hasBundledRuntime()) {
+            return { success: false, error: 'Bundled Node.js runtime is missing' };
+        }
 
         const packageName = toolId === 'claude-code'
             ? '@anthropic-ai/claude-code'
@@ -628,49 +732,67 @@ export class ToolManager {
             fs.writeFileSync(pkgJsonPath, '{"private":true}', 'utf-8');
         }
 
-        console.log(`[ToolManager] Updating ${toolId} in ${toolDir}`);
-        console.log(`[ToolManager] Package: ${packageName}@latest`);
+        // Pin the version first, then install it from whichever registry
+        // answered faster — see planInstall for the full reasoning. The
+        // other registry is the fallback (a lagging mirror fails fast with
+        // ETARGET), unless the failure is one a different registry can't
+        // fix: a permission error, or a timeout (the link itself is too slow
+        // — another 30-minute attempt would only double the wait).
+        const [official, mirror] = await this.probeLatestVersions(packageName);
+        const plan = planInstall(official, mirror);
+        const spec = `${packageName}@${plan.spec}`;
+        const [primary, secondary] = plan.registries;
+        const previousVersion = tool.broken ? undefined : tool.version;
 
-        // Registry strategy is explicit and unified — `--registry` overrides
-        // any user ~/.npmrc, so every install behaves the same: official
-        // registry first; direct connections to registry.npmjs.org are
-        // unreliable from mainland China, so on failure retry against
-        // npmmirror — unless the failure is a permission error a mirror
-        // can't fix.
-        const result = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
-        if (!result.success) {
-            if (this.isPermissionError(result.error)) return result;
-
-            console.log(`[ToolManager] Official-registry install failed, retrying with npmmirror...`);
-            const mirrorResult = await this.npmInstall(packageName, toolDir, CHINA_MIRROR_REGISTRY);
-            if (!mirrorResult.success) {
-                return {
-                    success: false,
-                    error: `Install failed from both the official registry and npmmirror.\n--- official registry ---\n${result.error}\n--- npmmirror ---\n${mirrorResult.error}`,
-                };
+        // Name the native-binary package explicitly so a dropped download
+        // fails the install (and npm rolls back) instead of silently leaving
+        // a tool without its binary — see platformInstallSpec.
+        const specs = [spec];
+        const platformPkg = platformPackageName(packageName, os.platform(), os.arch());
+        if (platformPkg && plan.spec !== 'latest') {
+            const optional = await this.npmViewOptionalDeps(spec, primary)
+                ?? await this.npmViewOptionalDeps(spec, secondary);
+            const platformSpec = platformInstallSpec(optional, platformPkg);
+            if (platformSpec) {
+                specs.push(platformSpec);
+            } else {
+                console.warn(`[ToolManager] Could not resolve ${platformPkg} for ${spec}; relying on optional dependencies`);
             }
         }
 
-        // Both Claude Code (≥2.1.113) and Codex distribute platform-specific
-        // native binaries via optional dependencies. Chinese mirrors like
-        // npmmirror may lag behind on syncing these. If the platform package
-        // is missing after install, retry with the official npm registry.
-        const hasPlatformPkg = toolId === 'claude-code'
-            ? this.hasClaudeCodePlatformPackage(toolDir)
-            : toolId === 'codex'
-                ? this.hasCodexPlatformPackage(toolDir)
-                : true;
+        console.log(`[ToolManager] Updating ${toolId} in ${toolDir}`);
+        console.log(`[ToolManager] Packages: ${specs.join(' ')}`, {
+            official: `${official.version ?? 'unreachable'} (${official.elapsedMs}ms)`,
+            npmmirror: `${mirror.version ?? 'unreachable'} (${mirror.elapsedMs}ms)`,
+            order: plan.registries.map(registryLabel),
+        });
 
-        if (!hasPlatformPkg) {
+        const fail = (error?: string) => this.updateFailure(tool, previousVersion, error);
+
+        const result = await this.npmInstall(specs, toolDir, primary);
+        if (!result.success) {
+            if (result.timedOut || this.isPermissionError(result.error)) {
+                return fail(result.error);
+            }
+
+            console.log(`[ToolManager] Install from ${registryLabel(primary)} failed, retrying with ${registryLabel(secondary)}...`);
+            const retry = await this.npmInstall(specs, toolDir, secondary);
+            if (!retry.success) {
+                if (retry.timedOut) return fail(retry.error);
+                return fail(`Install failed from both the ${registryLabel(primary)} and ${registryLabel(secondary)}.\n--- ${registryLabel(primary)} ---\n${result.error}\n--- ${registryLabel(secondary)} ---\n${retry.error}`);
+            }
+        }
+
+        // The launcher needs the platform package's package.json, at the
+        // main package's version. If it's not there (an unpinned install, or
+        // a mirror that lags on the platform packages), retry once with the
+        // official registry.
+        if (!this.platformPackageOk(toolId)) {
             console.log(`[ToolManager] ${toolId} platform package missing after install, retrying with official registry...`);
-            const fallback = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
-            if (!fallback.success) return fallback;
-
-            const hasPlatformPkgRetry = toolId === 'claude-code'
-                ? this.hasClaudeCodePlatformPackage(toolDir)
-                : this.hasCodexPlatformPackage(toolDir);
-            if (!hasPlatformPkgRetry) {
-                return { success: false, error: 'Platform-specific binary still missing after fallback install' };
+            const fallback = await this.npmInstall(specs, toolDir, OFFICIAL_REGISTRY);
+            if (!fallback.success) return fail(fallback.error);
+            if (!this.platformPackageOk(toolId)) {
+                return fail('Platform-specific binary still missing after fallback install');
             }
         }
 
@@ -680,78 +802,74 @@ export class ToolManager {
     }
 
     /**
+     * A failed update, worded for the user: whether the tool still works (npm
+     * rolled back to the previous version) or needs another try, plus a hint
+     * when the files were locked by a running session. Raw npm output follows.
+     */
+    private updateFailure(tool: ToolInfo, previousVersion: string | undefined, error?: string) {
+        this.detectTools();
+        const lines: string[] = [];
+        if (!tool.broken && tool.version && tool.version === previousVersion) {
+            lines.push(`${tool.name} 更新未完成，已保留原来的版本 ${tool.version}，可以继续使用。`);
+        } else if (tool.broken) {
+            lines.push(`${tool.name} 更新未完成，原生程序不完整，网络好一些时请点击版本号重试修复。`);
+        } else {
+            lines.push(`${tool.name} 更新未完成。`);
+        }
+        if (error && /\b(EBUSY|EPERM)\b/.test(error)) {
+            lines.push(`文件被占用：请关闭所有 ${tool.name} 标签页后重试。`);
+        }
+        if (error) lines.push('', error);
+        return { success: false, version: tool.version, error: lines.join('\n') };
+    }
+
+    /**
      * Permission failures (e.g. the app is installed under Program Files
-     * and npm can't write to resources/bundled-tools) won't be fixed by
+     * and npm can't write to resources/bundled-tools) and locked files (a
+     * running session holding the binary, EBUSY) won't be fixed by
      * switching registries — don't waste a retry on them.
      */
     private isPermissionError(message?: string): boolean {
-        return !!message && /\b(EPERM|EACCES)\b/.test(message);
+        return !!message && /\b(EPERM|EACCES|EBUSY)\b/.test(message);
     }
 
     private npmInstall(
-        packageName: string,
+        specs: string[],
         cwd: string,
-        registry?: string,
-    ): Promise<{ success: boolean; error?: string }> {
+        registry: string,
+    ): Promise<{ success: boolean; error?: string; timedOut?: boolean }> {
         return new Promise((resolve) => {
-            const { execFile } = require('child_process') as typeof import('child_process');
-            if (!this.hasBundledRuntime()) {
-                resolve({ success: false, error: 'Bundled Node.js runtime is missing' });
-                return;
-            }
-
             const npmExec = this.getBundledNodeExecutable();
-            const npmCli = this.getBundledNpmCli();
-            const commandArgs = [npmCli, 'install', `${packageName}@latest`];
-            if (registry) {
-                commandArgs.push('--registry', registry);
-            }
-            console.log(`[ToolManager] Running: ${npmExec} ${commandArgs.join(' ')}`);
+            const proxy = this.getProxy();
+            const commandArgs = [this.getBundledNpmCli(), ...buildNpmInstallArgs(specs, registry, proxy)];
+            // The proxy URL may carry credentials; keep it out of the log.
+            const loggedArgs = commandArgs.map(arg => arg === proxy ? '<proxy>' : arg);
+            console.log(`[ToolManager] Running: ${npmExec} ${loggedArgs.join(' ')}`);
 
-            execFile(npmExec, commandArgs, {
+            this.runFile(npmExec, commandArgs, {
                 cwd,
-                timeout: 120000,
+                timeout: NPM_INSTALL_TIMEOUT_MS,
                 env: buildSanitizedEnv(this.buildRuntimeEnv()),
                 windowsHide: true,
             }, (error: any, stdout: string, stderr: string) => {
                 const output = (stdout || '') + (stderr || '');
                 console.log(`[ToolManager] Install output:`, output);
-                if (error) {
-                    const msg = `${error.message}\n${output}`.trim();
-                    console.error(`[ToolManager] Install failed:`, msg);
-                    resolve({ success: false, error: msg });
-                } else {
+                if (!error) {
                     resolve({ success: true });
+                    return;
                 }
+                // A timeout kill surfaces as a bare `Command failed … ` with
+                // no npm error in the output — say what actually happened.
+                if (isTimeoutKill(error)) {
+                    console.error(`[ToolManager] Install timed out after ${NPM_INSTALL_TIMEOUT_MS}ms (${registryLabel(registry)})`);
+                    resolve({ success: false, error: describeInstallTimeout(proxy), timedOut: true });
+                    return;
+                }
+                let msg = `${error.message}\n${output}`.trim();
+                if (proxy) msg = msg.split(proxy).join('<proxy>');
+                console.error(`[ToolManager] Install failed:`, msg);
+                resolve({ success: false, error: msg });
             });
         });
-    }
-
-    private hasClaudeCodePlatformPackage(toolDir: string): boolean {
-        const PLATFORM_PKG: Record<string, Record<string, string>> = {
-            win32:  { x64: 'claude-code-win32-x64', arm64: 'claude-code-win32-arm64' },
-            darwin: { x64: 'claude-code-darwin-x64', arm64: 'claude-code-darwin-arm64' },
-            linux:  { x64: 'claude-code-linux-x64',  arm64: 'claude-code-linux-arm64' },
-        };
-        const pkgName = PLATFORM_PKG[os.platform()]?.[os.arch()];
-        if (!pkgName) return true;
-        const pkgDir = path.join(toolDir, 'node_modules', '@anthropic-ai', pkgName);
-        const exists = fs.existsSync(pkgDir);
-        console.log(`[ToolManager] Claude Code platform package check: ${pkgDir} → ${exists}`);
-        return exists;
-    }
-
-    private hasCodexPlatformPackage(toolDir: string): boolean {
-        const PLATFORM_PKG: Record<string, Record<string, string>> = {
-            win32:  { x64: 'codex-win32-x64', arm64: 'codex-win32-arm64' },
-            darwin: { x64: 'codex-darwin-x64', arm64: 'codex-darwin-arm64' },
-            linux:  { x64: 'codex-linux-x64',  arm64: 'codex-linux-arm64' },
-        };
-        const pkgName = PLATFORM_PKG[os.platform()]?.[os.arch()];
-        if (!pkgName) return true; // unknown platform, skip check
-        const pkgDir = path.join(toolDir, 'node_modules', '@openai', pkgName);
-        const exists = fs.existsSync(pkgDir);
-        console.log(`[ToolManager] Platform package check: ${pkgDir} → ${exists}`);
-        return exists;
     }
 }

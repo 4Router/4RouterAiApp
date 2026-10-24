@@ -797,6 +797,12 @@ async function refreshToolStatus() {
             if (!tool.available) {
                 badgeEl.textContent = '未安装';
                 badgeEl.className = 'tool-badge unavailable';
+            } else if (tool.broken) {
+                // A previous update dropped the native binary; clicking the
+                // badge reinstalls it.
+                badgeEl.textContent = '点击修复';
+                badgeEl.className = 'tool-badge updatable';
+                badgeEl.title = '原生程序缺失（上次更新可能没有下载完整），点击重新安装';
             } else {
                 badgeEl.textContent = tool.version || '就绪';
                 badgeEl.className = 'tool-badge';
@@ -835,7 +841,7 @@ async function updateTool(/** @type {string} */ toolId, /** @type {string} */ ba
             badgeEl.className = 'tool-badge unavailable';
             console.error('Update failed:', result.error);
             alert(`更新失败:\n${result.error}`);
-            setTimeout(() => { badgeEl.textContent = origText; badgeEl.className = 'tool-badge'; }, 3000);
+            setTimeout(() => { refreshToolStatus(); }, 3000);
         }
     } catch (err) {
         badgeEl.textContent = '更新失败';
@@ -855,6 +861,13 @@ async function launchTool(/** @type {string} */ toolId) {
 
     if (!tool.available) {
         alert(`${tool.name} 的内置运行时或工具文件缺失。\n请重新安装应用，或重新执行打包流程。`);
+        return;
+    }
+
+    if (tool.broken) {
+        if (confirm(`${tool.name} 的原生程序缺失，上次更新可能没有下载完整。\n现在重新下载修复吗？`)) {
+            updateTool(toolId, toolId === 'claude-code' ? 'badge-claude' : 'badge-codex');
+        }
         return;
     }
 
