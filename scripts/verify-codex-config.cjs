@@ -38,7 +38,7 @@ function check(name, condition, detail) {
 function makeBundledTools() {
     const root = path.join(APPDATA, 'bundled-tools');
     const files = [
-        ['node-runtime', 'node.exe'],
+        ['node-runtime', process.platform === 'win32' ? 'node.exe' : 'node'],
         ['node-runtime', 'node_modules', 'npm', 'bin', 'npm-cli.js'],
         ['codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'],
     ];
@@ -59,8 +59,8 @@ function makeStore(overrides = {}) {
     };
     return {
         getApiKey: () => 'test-api-key',
-        getBaseUrl: () => 'https://4router.net/v1',
-        getModel: () => 'gpt-5.6-sol',
+        getBaseUrl: () => overrides.baseUrl || 'https://4router.net/v1',
+        getModel: () => overrides.model || 'gpt-5.6-sol',
         get: (key) => values[key],
     };
 }
@@ -134,8 +134,62 @@ check('--no-daemon on 0.156.0 (first release with the flag)', noDaemon('0.156.0'
 check('no --no-daemon on 0.155.0 (flag would be rejected)', !noDaemon('0.155.0'));
 check('no --no-daemon when the version is unknown', !noDaemon(undefined));
 
+console.log('\n[5] User root keys stay at the root');
+// Root keys that Codex or the user wrote used to be appended after [analytics]:
+// one launch filed them under that table, the next dropped them with it.
+// The host keys are only host-owned at the root, not inside a user profile.
+fs.writeFileSync(configFile, [
+    'hide_agent_reasoning = true',
+    'model = "user-model-is-overridden"',
+    '',
+    '[profiles.fast]',
+    'model = "o4-mini"',
+    'approval_policy = "on-request"',
+    '',
+].join('\n'));
+launch(makeStore());
+const third = launch(makeStore()).config;
+const firstHeader = third.search(/^\[/m);
+const rootPart = third.slice(0, firstHeader);
+check('user root key survives two launches', /^hide_agent_reasoning = true$/m.test(third));
+check('user root key sits above the first section', /^hide_agent_reasoning = true$/m.test(rootPart),
+    'below a header it belongs to that table');
+check('host root key still overridden', !third.includes('user-model-is-overridden'));
+const profile = third.slice(third.indexOf('[profiles.fast]')).split('\n[')[0];
+check('profile keeps its own model', profile.includes('model = "o4-mini"'), profile);
+check('profile keeps its own approval_policy', profile.includes('approval_policy = "on-request"'), profile);
+
+// Continuation lines of multi-line values must not be mistaken for headers.
+fs.writeFileSync(configFile, [
+    'developer_instructions = """',
+    '[not a header]',
+    'model = "inside a string"',
+    '"""',
+    'matrix = [',
+    '  [1, 2],',
+    ']',
+    '',
+    "[projects.'C:\\work\\[old]\\repo']",
+    'trust_level = "trusted"',
+    '',
+].join('\n'));
+launch(makeStore());
+const multi = launch(makeStore()).config;
+const multiRoot = multi.slice(0, multi.search(/^\[(?!not a header|1, 2)/m));
+check('multi-line string kept whole at the root',
+    multiRoot.includes('"""\n[not a header]\nmodel = "inside a string"\n"""'), multi);
+check('multi-line array kept whole at the root', multiRoot.includes('matrix = [\n  [1, 2],\n]'), multi);
+check('bracketed project path still a section', multi.includes("[projects.'C:\\work\\[old]\\repo']\ntrust_level"), multi);
+
+console.log('\n[6] Store values are escaped as TOML strings');
+fs.rmSync(configFile, { force: true });
+const escaped = launch(makeStore({ baseUrl: 'https://x/v1"\ninjected = true', model: 'a\\b' })).config;
+check('quote and newline in base_url escaped',
+    escaped.includes('base_url = "https://x/v1\\"\\ninjected = true"') && !/^injected/m.test(escaped), escaped);
+check('backslash in model escaped', escaped.includes('model = "a\\\\b"'), escaped);
+
 console.log('');
-console.log('[5] Windows launch command');
+console.log('[7] Windows launch command');
 // ConPTY forwards non-default console attributes to xterm.js as explicit
 // palette colors, so a RawUI color prelude here paints the tools' screens with
 // the theme's ANSI white (grey under the light theme). Codex learns the theme
