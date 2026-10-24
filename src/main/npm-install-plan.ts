@@ -60,13 +60,14 @@ export function buildNpmNetworkArgs(registry: string, proxy?: string): string[] 
 }
 
 /**
- * Args after npm-cli.js for installing `spec` (e.g. `@openai/codex@0.163.0`).
- * --no-audit / --no-fund drop two extra registry round-trips that do
- * nothing for an embedded tool and only add waiting on a slow link.
+ * Args after npm-cli.js for installing `specs` (e.g. `@openai/codex@0.163.0`
+ * plus its platform package). --no-audit / --no-fund drop two extra registry
+ * round-trips that do nothing for an embedded tool and only add waiting on a
+ * slow link.
  */
-export function buildNpmInstallArgs(spec: string, registry: string, proxy?: string): string[] {
+export function buildNpmInstallArgs(specs: string[], registry: string, proxy?: string): string[] {
     return [
-        'install', spec,
+        'install', ...specs,
         ...buildNpmNetworkArgs(registry, proxy),
         '--fetch-retries', String(NPM_FETCH_RETRIES),
         '--no-audit',
@@ -136,4 +137,42 @@ export function describeInstallTimeout(proxy?: string): string {
 
 export function registryLabel(registry: string): string {
     return registry === CHINA_MIRROR_REGISTRY ? 'npmmirror' : 'official registry';
+}
+
+/**
+ * Name of the package carrying the native binary for this machine, e.g.
+ * `@anthropic-ai/claude-code-win32-x64`, or `@openai/codex-win32-x64` (an npm
+ * alias for `@openai/codex@<ver>-win32-x64`). Null where neither tool ships one.
+ */
+export function platformPackageName(packageName: string, platform: string, arch: string): string | null {
+    const supported: Record<string, string[]> = {
+        win32: ['x64', 'arm64'],
+        darwin: ['x64', 'arm64'],
+        linux: ['x64', 'arm64'],
+    };
+    return supported[platform]?.includes(arch) ? `${packageName}-${platform}-${arch}` : null;
+}
+
+/**
+ * `name@spec` for installing the platform package explicitly, taken from the
+ * main package's optionalDependencies: "2.1.310" for Claude Code, an
+ * `npm:@openai/codex@0.164.0-win32-x64` alias for Codex.
+ *
+ * Why explicitly: as an optional dependency, a platform tarball that fails to
+ * download — the ~150 MB part, so the part a weak link drops — is skipped
+ * with exit code 0. npm still swaps in the new main package and deletes the
+ * old binary, leaving a tool that dies with `Could not find native binary
+ * package`. Named on the command line it is a hard dependency: the failure
+ * fails the install, and npm rolls back to the previous, working version.
+ */
+export function platformInstallSpec(optionalDeps: unknown, platformPkg: string): string | null {
+    if (!optionalDeps || typeof optionalDeps !== 'object') return null;
+    const spec = (optionalDeps as Record<string, unknown>)[platformPkg];
+    return typeof spec === 'string' && spec ? `${platformPkg}@${spec}` : null;
+}
+
+/** Platform package built for this main version ("0.164.0-win32-x64" counts for "0.164.0"). */
+export function platformVersionMatches(platformVersion: unknown, mainVersion: unknown): boolean {
+    if (typeof platformVersion !== 'string' || typeof mainVersion !== 'string' || !mainVersion) return false;
+    return platformVersion === mainVersion || platformVersion.startsWith(`${mainVersion}-`);
 }

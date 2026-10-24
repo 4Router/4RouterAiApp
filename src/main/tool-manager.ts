@@ -16,6 +16,9 @@ import {
     isTimeoutKill,
     pickTargetVersion,
     planInstall,
+    platformInstallSpec,
+    platformPackageName,
+    platformVersionMatches,
     registryLabel,
 } from './npm-install-plan';
 
@@ -31,6 +34,8 @@ export interface ToolInfo {
     available: boolean;
     version?: string;
     source?: 'bundled' | 'global';
+    /** Bundled, but its native-binary package is missing — launching would fail. */
+    broken?: boolean;
 }
 
 export interface LaunchConfig {
@@ -166,6 +171,38 @@ export class ToolManager {
                     }
                 } catch { /* best-effort */ }
             }
+
+            tool.broken = tool.available && tool.source === 'bundled' && !this.platformPackageOk(tool.id);
+            if (tool.broken) {
+                console.warn(`[ToolManager] ${tool.id}: native binary package missing or mismatched — needs repair`);
+            }
+        }
+    }
+
+    private getPackageName(toolId: string): string {
+        return toolId === 'claude-code' ? '@anthropic-ai/claude-code' : '@openai/codex';
+    }
+
+    /**
+     * Whether the native-binary package the launcher needs is really there:
+     * its package.json present (what cli-wrapper.cjs / codex.js resolve) and
+     * built for the installed main version. A bare directory isn't enough —
+     * a half-finished update can leave one behind.
+     */
+    private platformPackageOk(toolId: string): boolean {
+        const packageName = this.getPackageName(toolId);
+        const platformPkg = platformPackageName(packageName, os.platform(), os.arch());
+        if (!platformPkg) return true; // no native package for this platform
+        const nodeModules = path.join(this.getToolDir(toolId), 'node_modules');
+        try {
+            const read = (name: string) =>
+                JSON.parse(fs.readFileSync(path.join(nodeModules, ...name.split('/'), 'package.json'), 'utf-8'));
+            const ok = platformVersionMatches(read(platformPkg).version, read(packageName).version);
+            console.log(`[ToolManager] ${toolId} platform package ${platformPkg}: ${ok ? 'ok' : 'version mismatch'}`);
+            return ok;
+        } catch {
+            console.log(`[ToolManager] ${toolId} platform package ${platformPkg}: missing`);
+            return false;
         }
     }
 
@@ -645,6 +682,27 @@ export class ToolManager {
         });
     }
 
+    /** `optionalDependencies` of an exact version, or null if the query failed. */
+    private npmViewOptionalDeps(spec: string, registry: string): Promise<Record<string, string> | null> {
+        return new Promise((resolve) => {
+            const args = [
+                this.getBundledNpmCli(), 'view', spec, 'optionalDependencies', '--json',
+                ...buildNpmNetworkArgs(registry, this.getProxy()),
+            ];
+            this.runFile(this.getBundledNodeExecutable(), args, {
+                timeout: NPM_VIEW_TIMEOUT_MS,
+                windowsHide: true,
+                env: buildSanitizedEnv(this.buildRuntimeEnv()),
+            }, (error, stdout) => {
+                try {
+                    resolve(error ? null : JSON.parse(stdout));
+                } catch {
+                    resolve(null);
+                }
+            });
+        });
+    }
+
     /**
      * Update a bundled tool to the latest version by running
      * `npm install <package>@<version>` in the tool's bundled directory.
@@ -684,51 +742,57 @@ export class ToolManager {
         const plan = planInstall(official, mirror);
         const spec = `${packageName}@${plan.spec}`;
         const [primary, secondary] = plan.registries;
+        const previousVersion = tool.broken ? undefined : tool.version;
+
+        // Name the native-binary package explicitly so a dropped download
+        // fails the install (and npm rolls back) instead of silently leaving
+        // a tool without its binary — see platformInstallSpec.
+        const specs = [spec];
+        const platformPkg = platformPackageName(packageName, os.platform(), os.arch());
+        if (platformPkg && plan.spec !== 'latest') {
+            const optional = await this.npmViewOptionalDeps(spec, primary)
+                ?? await this.npmViewOptionalDeps(spec, secondary);
+            const platformSpec = platformInstallSpec(optional, platformPkg);
+            if (platformSpec) {
+                specs.push(platformSpec);
+            } else {
+                console.warn(`[ToolManager] Could not resolve ${platformPkg} for ${spec}; relying on optional dependencies`);
+            }
+        }
 
         console.log(`[ToolManager] Updating ${toolId} in ${toolDir}`);
-        console.log(`[ToolManager] Package: ${spec}`, {
+        console.log(`[ToolManager] Packages: ${specs.join(' ')}`, {
             official: `${official.version ?? 'unreachable'} (${official.elapsedMs}ms)`,
             npmmirror: `${mirror.version ?? 'unreachable'} (${mirror.elapsedMs}ms)`,
             order: plan.registries.map(registryLabel),
         });
 
-        const result = await this.npmInstall(spec, toolDir, primary);
+        const fail = (error?: string) => this.updateFailure(tool, previousVersion, error);
+
+        const result = await this.npmInstall(specs, toolDir, primary);
         if (!result.success) {
             if (result.timedOut || this.isPermissionError(result.error)) {
-                return { success: false, error: result.error };
+                return fail(result.error);
             }
 
             console.log(`[ToolManager] Install from ${registryLabel(primary)} failed, retrying with ${registryLabel(secondary)}...`);
-            const retry = await this.npmInstall(spec, toolDir, secondary);
+            const retry = await this.npmInstall(specs, toolDir, secondary);
             if (!retry.success) {
-                if (retry.timedOut) return { success: false, error: retry.error };
-                return {
-                    success: false,
-                    error: `Install failed from both the ${registryLabel(primary)} and ${registryLabel(secondary)}.\n--- ${registryLabel(primary)} ---\n${result.error}\n--- ${registryLabel(secondary)} ---\n${retry.error}`,
-                };
+                if (retry.timedOut) return fail(retry.error);
+                return fail(`Install failed from both the ${registryLabel(primary)} and ${registryLabel(secondary)}.\n--- ${registryLabel(primary)} ---\n${result.error}\n--- ${registryLabel(secondary)} ---\n${retry.error}`);
             }
         }
 
-        // Both Claude Code (≥2.1.113) and Codex distribute platform-specific
-        // native binaries via optional dependencies. Chinese mirrors like
-        // npmmirror may lag behind on syncing these. If the platform package
-        // is missing after install, retry with the official npm registry.
-        const hasPlatformPkg = toolId === 'claude-code'
-            ? this.hasClaudeCodePlatformPackage(toolDir)
-            : toolId === 'codex'
-                ? this.hasCodexPlatformPackage(toolDir)
-                : true;
-
-        if (!hasPlatformPkg) {
+        // The launcher needs the platform package's package.json, at the
+        // main package's version. If it's not there (an unpinned install, or
+        // a mirror that lags on the platform packages), retry once with the
+        // official registry.
+        if (!this.platformPackageOk(toolId)) {
             console.log(`[ToolManager] ${toolId} platform package missing after install, retrying with official registry...`);
-            const fallback = await this.npmInstall(spec, toolDir, OFFICIAL_REGISTRY);
-            if (!fallback.success) return { success: false, error: fallback.error };
-
-            const hasPlatformPkgRetry = toolId === 'claude-code'
-                ? this.hasClaudeCodePlatformPackage(toolDir)
-                : this.hasCodexPlatformPackage(toolDir);
-            if (!hasPlatformPkgRetry) {
-                return { success: false, error: 'Platform-specific binary still missing after fallback install' };
+            const fallback = await this.npmInstall(specs, toolDir, OFFICIAL_REGISTRY);
+            if (!fallback.success) return fail(fallback.error);
+            if (!this.platformPackageOk(toolId)) {
+                return fail('Platform-specific binary still missing after fallback install');
             }
         }
 
@@ -738,23 +802,46 @@ export class ToolManager {
     }
 
     /**
+     * A failed update, worded for the user: whether the tool still works (npm
+     * rolled back to the previous version) or needs another try, plus a hint
+     * when the files were locked by a running session. Raw npm output follows.
+     */
+    private updateFailure(tool: ToolInfo, previousVersion: string | undefined, error?: string) {
+        this.detectTools();
+        const lines: string[] = [];
+        if (!tool.broken && tool.version && tool.version === previousVersion) {
+            lines.push(`${tool.name} 更新未完成，已保留原来的版本 ${tool.version}，可以继续使用。`);
+        } else if (tool.broken) {
+            lines.push(`${tool.name} 更新未完成，原生程序不完整，网络好一些时请点击版本号重试修复。`);
+        } else {
+            lines.push(`${tool.name} 更新未完成。`);
+        }
+        if (error && /\b(EBUSY|EPERM)\b/.test(error)) {
+            lines.push(`文件被占用：请关闭所有 ${tool.name} 标签页后重试。`);
+        }
+        if (error) lines.push('', error);
+        return { success: false, version: tool.version, error: lines.join('\n') };
+    }
+
+    /**
      * Permission failures (e.g. the app is installed under Program Files
-     * and npm can't write to resources/bundled-tools) won't be fixed by
+     * and npm can't write to resources/bundled-tools) and locked files (a
+     * running session holding the binary, EBUSY) won't be fixed by
      * switching registries — don't waste a retry on them.
      */
     private isPermissionError(message?: string): boolean {
-        return !!message && /\b(EPERM|EACCES)\b/.test(message);
+        return !!message && /\b(EPERM|EACCES|EBUSY)\b/.test(message);
     }
 
     private npmInstall(
-        spec: string,
+        specs: string[],
         cwd: string,
         registry: string,
     ): Promise<{ success: boolean; error?: string; timedOut?: boolean }> {
         return new Promise((resolve) => {
             const npmExec = this.getBundledNodeExecutable();
             const proxy = this.getProxy();
-            const commandArgs = [this.getBundledNpmCli(), ...buildNpmInstallArgs(spec, registry, proxy)];
+            const commandArgs = [this.getBundledNpmCli(), ...buildNpmInstallArgs(specs, registry, proxy)];
             // The proxy URL may carry credentials; keep it out of the log.
             const loggedArgs = commandArgs.map(arg => arg === proxy ? '<proxy>' : arg);
             console.log(`[ToolManager] Running: ${npmExec} ${loggedArgs.join(' ')}`);
@@ -784,33 +871,5 @@ export class ToolManager {
                 resolve({ success: false, error: msg });
             });
         });
-    }
-
-    private hasClaudeCodePlatformPackage(toolDir: string): boolean {
-        const PLATFORM_PKG: Record<string, Record<string, string>> = {
-            win32:  { x64: 'claude-code-win32-x64', arm64: 'claude-code-win32-arm64' },
-            darwin: { x64: 'claude-code-darwin-x64', arm64: 'claude-code-darwin-arm64' },
-            linux:  { x64: 'claude-code-linux-x64',  arm64: 'claude-code-linux-arm64' },
-        };
-        const pkgName = PLATFORM_PKG[os.platform()]?.[os.arch()];
-        if (!pkgName) return true;
-        const pkgDir = path.join(toolDir, 'node_modules', '@anthropic-ai', pkgName);
-        const exists = fs.existsSync(pkgDir);
-        console.log(`[ToolManager] Claude Code platform package check: ${pkgDir} → ${exists}`);
-        return exists;
-    }
-
-    private hasCodexPlatformPackage(toolDir: string): boolean {
-        const PLATFORM_PKG: Record<string, Record<string, string>> = {
-            win32:  { x64: 'codex-win32-x64', arm64: 'codex-win32-arm64' },
-            darwin: { x64: 'codex-darwin-x64', arm64: 'codex-darwin-arm64' },
-            linux:  { x64: 'codex-linux-x64',  arm64: 'codex-linux-arm64' },
-        };
-        const pkgName = PLATFORM_PKG[os.platform()]?.[os.arch()];
-        if (!pkgName) return true; // unknown platform, skip check
-        const pkgDir = path.join(toolDir, 'node_modules', '@openai', pkgName);
-        const exists = fs.existsSync(pkgDir);
-        console.log(`[ToolManager] Platform package check: ${pkgDir} → ${exists}`);
-        return exists;
     }
 }

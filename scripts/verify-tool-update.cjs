@@ -39,6 +39,7 @@ function check(name, condition, detail) {
 const PROXY = 'http://127.0.0.1:7890';
 const PKG = '@anthropic-ai/claude-code';
 const PLATFORM_PKG = `claude-code-${os.platform()}-${os.arch()}`;
+const PLATFORM_FULL = `@anthropic-ai/${PLATFORM_PKG}`;
 
 function argAfter(args, flag) {
     const i = args.indexOf(flag);
@@ -69,13 +70,34 @@ function makeStore(values = {}) {
     };
 }
 
+/** Write an installed claude-code (and, unless `platform` is false, its native package). */
+function writeInstalled(root, version, platform = version) {
+    const scope = path.join(root, 'claude-code', 'node_modules', '@anthropic-ai');
+    fs.mkdirSync(path.join(scope, 'claude-code'), { recursive: true });
+    fs.writeFileSync(path.join(scope, 'claude-code', 'cli.js'), '');
+    fs.writeFileSync(path.join(scope, 'claude-code', 'package.json'), JSON.stringify({ name: PKG, version }));
+    const platformDir = path.join(scope, PLATFORM_PKG);
+    fs.rmSync(platformDir, { recursive: true, force: true });
+    if (platform) {
+        fs.mkdirSync(platformDir, { recursive: true });
+        fs.writeFileSync(path.join(platformDir, 'package.json'), JSON.stringify({ name: PLATFORM_FULL, version: platform }));
+    }
+}
+
 /**
  * ToolManager with a fake npm.
- *   views:    { [registry]: { version, delayMs } } — version null = unreachable
- *   installs: queue of (registry, args) => error | null for each install call
+ *   views:    { [registry]: { version, delayMs, optional } } — version null = unreachable;
+ *             optional: false makes `npm view … optionalDependencies` fail
+ *   installs: queue of (registry, args) => error | null | 'drop-platform' for each
+ *             install call. 'drop-platform' is the platform tarball failing to
+ *             download, with npm's real semantics: as an optional dependency it
+ *             is skipped (exit 0, old binary gone); named explicitly it fails
+ *             the install and npm rolls back.
+ *   installed: version already installed before the update
  */
-function makeManager({ proxy, views, installs = [] }) {
+function makeManager({ proxy, views, installs = [], installed }) {
     const root = makeBundledTools(`tools-${Math.random().toString(36).slice(2)}`);
+    if (installed) writeInstalled(root, installed);
     const manager = new ToolManager(root, makeStore({ proxy }));
     const calls = [];
     manager.runFile = (file, args, options, callback) => {
@@ -83,6 +105,14 @@ function makeManager({ proxy, views, installs = [] }) {
         const registry = argAfter(npmArgs, '--registry');
         const call = { command: npmArgs[0], args: npmArgs, options, registry };
         calls.push(call);
+        if (call.command === 'view' && npmArgs.includes('optionalDependencies')) {
+            const view = views[registry] || {};
+            const version = npmArgs[1].slice(PKG.length + 1);
+            setImmediate(() => view.version && view.optional !== false
+                ? callback(null, JSON.stringify({ [PLATFORM_FULL]: version, '@anthropic-ai/claude-code-other': version }), '')
+                : callback(Object.assign(new Error('Command failed: npm view'), { code: 1 }), '', 'E404'));
+            return;
+        }
         if (call.command === 'view') {
             const view = views[registry] || { version: null, delayMs: 0 };
             setTimeout(() => view.version
@@ -92,16 +122,21 @@ function makeManager({ proxy, views, installs = [] }) {
             return;
         }
         const behaviour = installs.shift() || (() => null);
-        const error = behaviour(registry, npmArgs);
-        if (!error) {
+        let error = behaviour(registry, npmArgs);
+        const version = npmArgs[1].slice(PKG.length + 1);
+        const explicitPlatform = npmArgs.some(a => a.startsWith(`${PLATFORM_FULL}@`));
+        if (error === 'drop-platform') {
+            if (explicitPlatform) {
+                // Hard dependency failed to download: npm errors out and rolls back.
+                error = Object.assign(new Error('Command failed: npm install'), { code: 1, message: 'npm error ECONNRESET' });
+            } else {
+                // Optional dependency: skipped, exit 0, new main package, no binary.
+                writeInstalled(root, version, false);
+                error = null;
+            }
+        } else if (!error) {
             // What a real install leaves behind: the package and its platform binary.
-            const scope = path.join(root, 'claude-code', 'node_modules', '@anthropic-ai');
-            fs.mkdirSync(path.join(scope, PLATFORM_PKG), { recursive: true });
-            fs.mkdirSync(path.join(scope, 'claude-code'), { recursive: true });
-            fs.writeFileSync(path.join(scope, 'claude-code', 'cli.js'), '');
-            const version = npmArgs[1].slice(PKG.length + 1);
-            fs.writeFileSync(path.join(scope, 'claude-code', 'package.json'),
-                JSON.stringify({ name: PKG, version }));
+            writeInstalled(root, version);
         }
         setImmediate(() => callback(error, '', error ? 'npm error' : ''));
     };
@@ -128,13 +163,13 @@ async function main() {
         /下载超时（30 分钟内未完成）/.test(plan.describeInstallTimeout()), plan.describeInstallTimeout());
 
     console.log('\n[2] npm argv');
-    const bare = plan.buildNpmInstallArgs(`${PKG}@2.1.200`, OFFICIAL);
+    const bare = plan.buildNpmInstallArgs([`${PKG}@2.1.200`], OFFICIAL);
     check('installs the pinned spec', bare[0] === 'install' && bare[1] === `${PKG}@2.1.200`, bare.join(' '));
     check('--registry set', argAfter(bare, '--registry') === OFFICIAL);
     check('no proxy flags without a proxy', !bare.includes('--proxy') && !bare.includes('--https-proxy'));
     check('--fetch-retries raised above the default 2', Number(argAfter(bare, '--fetch-retries')) > 2);
     check('audit/fund round-trips skipped', bare.includes('--no-audit') && bare.includes('--no-fund'));
-    const proxied = plan.buildNpmInstallArgs(`${PKG}@2.1.200`, MIRROR, ` ${PROXY} `);
+    const proxied = plan.buildNpmInstallArgs([`${PKG}@2.1.200`], MIRROR, ` ${PROXY} `);
     check('--proxy passed (trimmed)', argAfter(proxied, '--proxy') === PROXY, proxied.join(' '));
     check('--https-proxy passed', argAfter(proxied, '--https-proxy') === PROXY);
     check('blank proxy ignored', !plan.buildNpmNetworkArgs(OFFICIAL, '  ').includes('--proxy'));
@@ -167,7 +202,7 @@ async function main() {
             },
         });
         const result = await manager.updateTool('claude-code');
-        const views = calls.filter(c => c.command === 'view');
+        const views = calls.filter(c => c.command === 'view' && !c.args.includes('optionalDependencies'));
         const installs = installCalls();
         check('update succeeds', result.success, result.error);
         check('reports the installed version', result.version === '2.1.200', result.version);
@@ -176,6 +211,8 @@ async function main() {
         check('probes go through the proxy', views.every(v => argAfter(v.args, '--proxy') === PROXY
             && argAfter(v.args, '--https-proxy') === PROXY));
         check('single install', installs.length === 1, String(installs.length));
+        check('platform package named explicitly at the same version',
+            installs[0]?.args[2] === `${PLATFORM_FULL}@2.1.200`, installs[0]?.args.slice(0, 3).join(' '));
         check('faster mirror used first', installs[0]?.registry === MIRROR, installs[0]?.registry);
         check('pinned to the probed version', installs[0]?.args[1] === `${PKG}@2.1.200`, installs[0]?.args[1]);
         check('install goes through the proxy', argAfter(installs[0]?.args || [], '--proxy') === PROXY
@@ -247,7 +284,80 @@ async function main() {
             && /<proxy>/.test(result.error || ''), result.error);
     }
 
-    console.log('\n[6] checkUpdate agrees with updateTool on the version');
+    console.log('\n[6] Weak link drops the ~150 MB platform tarball');
+    {
+        const unit = plan.platformPackageName('@openai/codex', 'win32', 'x64');
+        check('codex platform package name', unit === '@openai/codex-win32-x64', unit);
+        check('no platform package for unknown platforms', plan.platformPackageName(PKG, 'freebsd', 'x64') === null);
+        const alias = plan.platformInstallSpec({ '@openai/codex-win32-x64': 'npm:@openai/codex@0.164.0-win32-x64' }, unit);
+        check('codex alias spec kept intact', alias === '@openai/codex-win32-x64@npm:@openai/codex@0.164.0-win32-x64', alias);
+        check('missing entry → null', plan.platformInstallSpec({}, unit) === null && plan.platformInstallSpec(null, unit) === null);
+        check('alias version matches its main version', plan.platformVersionMatches('0.164.0-win32-x64', '0.164.0'));
+        check('older platform build does not match', !plan.platformVersionMatches('2.1.309', '2.1.310'));
+    }
+    {
+        // The bug from the field: exit 0, new main package, no native binary.
+        const { manager, installCalls } = makeManager({
+            installed: '2.1.100',
+            views: {
+                [OFFICIAL]: { version: '2.1.200', delayMs: 50, optional: false },
+                [MIRROR]: { version: '2.1.200', delayMs: 0, optional: false },
+            },
+            installs: [() => 'drop-platform', () => 'drop-platform'],
+        });
+        const result = await manager.updateTool('claude-code');
+        check('without an explicit platform spec the drop is caught, not reported as success',
+            !result.success, JSON.stringify(result).slice(0, 200));
+        check('…and retried once against the official registry', installCalls().length === 2,
+            String(installCalls().length));
+        const status = manager.listTools().find(t => t.id === 'claude-code');
+        check('tool flagged as broken so the UI offers a repair', status.broken === true);
+        check('error tells the user to retry the repair', /点击版本号重试修复/.test(result.error || ''), result.error);
+    }
+    {
+        const { manager, installCalls } = makeManager({
+            installed: '2.1.100',
+            views: { [OFFICIAL]: { version: '2.1.200', delayMs: 50 }, [MIRROR]: { version: '2.1.200', delayMs: 0 } },
+            installs: [() => 'drop-platform', () => 'drop-platform'],
+        });
+        const result = await manager.updateTool('claude-code');
+        const status = manager.listTools().find(t => t.id === 'claude-code');
+        check('explicit platform spec → install fails instead of half-succeeding', !result.success);
+        check('both registries tried', installCalls().length === 2, String(installCalls().length));
+        check('npm rolled back: previous version still installed and runnable',
+            status.version === '2.1.100' && status.broken === false, JSON.stringify(status));
+        check('user told the old version is still usable', /已保留原来的版本 2\.1\.100/.test(result.error || ''), result.error);
+    }
+    {
+        // Repairing a tool left broken by an earlier update.
+        const { manager, installCalls } = makeManager({
+            views: { [OFFICIAL]: { version: '2.1.200', delayMs: 0 }, [MIRROR]: { version: '2.1.200', delayMs: 10 } },
+        });
+        writeInstalled(manager.bundledToolsPath, '2.1.200', false);
+        check('half-installed tool detected as broken', manager.listTools().find(t => t.id === 'claude-code').broken === true);
+        const result = await manager.updateTool('claude-code');
+        check('clicking update repairs it', result.success
+            && manager.listTools().find(t => t.id === 'claude-code').broken === false, JSON.stringify(result));
+    }
+    {
+        const { manager, installCalls } = makeManager({
+            installed: '2.1.100',
+            views: { [OFFICIAL]: { version: '2.1.200', delayMs: 0 }, [MIRROR]: { version: '2.1.200', delayMs: 30 } },
+            installs: [() => Object.assign(new Error('Command failed'), { code: 1, message: 'npm error EBUSY: resource busy or locked' })],
+        });
+        const result = await manager.updateTool('claude-code');
+        check('locked binary (EBUSY) is not retried on the other registry', installCalls().length === 1);
+        check('…and the user is told to close the running tabs', /请关闭所有 Claude Code 标签页/.test(result.error || ''), result.error);
+    }
+    {
+        // A platform directory left without its package.json is not "installed".
+        const { manager } = makeManager({ installed: '2.1.100', views: {} });
+        const platformDir = path.join(manager.bundledToolsPath, 'claude-code', 'node_modules', '@anthropic-ai', PLATFORM_PKG);
+        fs.rmSync(path.join(platformDir, 'package.json'));
+        check('bare platform directory counts as broken', manager.listTools().find(t => t.id === 'claude-code').broken === true);
+    }
+
+    console.log('\n[7] checkUpdate agrees with updateTool on the version');
     {
         const { manager, calls } = makeManager({
             proxy: PROXY,
