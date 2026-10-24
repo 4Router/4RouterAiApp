@@ -37,12 +37,66 @@ const CHINA_MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
 /** First Codex release with `--no-daemon`; older releases reject the flag. */
 const CODEX_NO_DAEMON_MIN_VERSION = '0.156.0';
 
+/** Quote a value as a TOML basic string (JSON escapes are valid TOML, bar DEL). */
+function tomlString(value: string): string {
+    return JSON.stringify(value).replace(/\x7f/g, '\\u007f');
+}
+
+interface TomlScanState {
+    /** Delimiter of the multi-line string still open at the end of the line. */
+    multiline: '"""' | "'''" | null;
+    /** Unclosed '[' outside strings — > 0 means a multi-line array continues. */
+    depth: number;
+}
+
 /**
- * Extract user-managed sections from an existing Codex config.toml,
+ * Advance a rough TOML lexer over one line, just far enough to tell whether
+ * the next line still belongs to a multi-line string or array value.
+ */
+function scanTomlLine(line: string, state: TomlScanState): TomlScanState {
+    let { multiline, depth } = state;
+    let i = 0;
+    while (i < line.length) {
+        if (multiline) {
+            const end = line.indexOf(multiline, i);
+            if (end < 0) break;
+            i = end + 3;
+            multiline = null;
+            continue;
+        }
+        const ch = line[i];
+        if (ch === '#') break;
+        if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
+            multiline = line.slice(i, i + 3) as '"""' | "'''";
+            i += 3;
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            // Single-line string: skip to its closing quote.
+            i++;
+            while (i < line.length && line[i] !== ch) {
+                i += ch === '"' && line[i] === '\\' ? 2 : 1;
+            }
+            i++;
+            continue;
+        }
+        if (ch === '[') depth++;
+        else if (ch === ']') depth = Math.max(0, depth - 1);
+        i++;
+    }
+    return { multiline, depth };
+}
+
+/**
+ * Extract user-managed settings from an existing Codex config.toml,
  * filtering out host-controlled keys and sections that 4RouterAi
  * regenerates on every launch.
+ *
+ * Root-level keys and sections come back separately: the caller has to put
+ * the root keys before its own section headers, or TOML would file them under
+ * whichever table happens to precede them.
  */
-function preserveUserConfig(existing: string): string {
+function preserveUserConfig(existing: string): { root: string; sections: string } {
     // Section headers that the host app fully controls (regenerated each launch).
     const hostSections = new Set([
         '[model_providers.4routerai]',
@@ -62,17 +116,25 @@ function preserveUserConfig(existing: string): string {
     ]);
 
     const lines = existing.split('\n');
-    const preserved: string[] = [];
+    const root: string[] = [];
+    const sections: string[] = [];
+    let atRoot = true;
     let inHostSection = false;
+    let scan: TomlScanState = { multiline: null, depth: 0 };
 
     for (const line of lines) {
         const trimmed = line.trim();
+        // A line inside a multi-line string or array belongs to the value
+        // above it, even if it happens to start with '['.
+        const continuation = scan.multiline !== null || scan.depth > 0;
+        scan = scanTomlLine(line, scan);
 
         // Detect section headers — e.g. [windows], [projects.'...'], [notice]
-        if (/^\[.+\]/.test(trimmed)) {
+        if (!continuation && /^\[.+\]/.test(trimmed)) {
+            atRoot = false;
             inHostSection = hostSections.has(trimmed);
             if (!inHostSection) {
-                preserved.push(line);
+                sections.push(line);
             }
             continue;
         }
@@ -80,16 +142,19 @@ function preserveUserConfig(existing: string): string {
         // Inside a host-controlled section → skip the line
         if (inHostSection) continue;
 
-        // Root-level area → filter out host-controlled keys
-        const keyMatch = trimmed.match(/^(\w+)\s*=/);
-        if (keyMatch && hostRootKeys.has(keyMatch[1])) continue;
-
-        preserved.push(line);
+        if (atRoot) {
+            // Root-level area → filter out host-controlled keys. Only here:
+            // the same names inside e.g. [profiles.x] belong to the user.
+            const keyMatch = !continuation && trimmed.match(/^(\w+)\s*=/);
+            if (keyMatch && hostRootKeys.has(keyMatch[1])) continue;
+            root.push(line);
+        } else {
+            sections.push(line);
+        }
     }
 
-    // Trim leading/trailing blank lines and return with surrounding newlines
-    const result = preserved.join('\n').trim();
-    return result ? '\n' + result + '\n' : '';
+    // Trim leading/trailing blank lines
+    return { root: root.join('\n').trim(), sections: sections.join('\n').trim() };
 }
 
 export class ToolManager {
@@ -436,6 +501,17 @@ export class ToolManager {
             const codexHomeDir = path.join(appDataDir, 'codex-home');
             fs.mkdirSync(codexHomeDir, { recursive: true });
 
+            // ── Preserve user preferences from existing config ──
+            const configFile = path.join(codexHomeDir, 'config.toml');
+            let userConfig = { root: '', sections: '' };
+            if (fs.existsSync(configFile)) {
+                try {
+                    userConfig = preserveUserConfig(fs.readFileSync(configFile, 'utf-8'));
+                } catch (e) {
+                    console.warn(`[ToolManager] Failed to read existing config.toml, starting fresh:`, e);
+                }
+            }
+
             const lines: string[] = [];
 
             // ── Root-level keys ──
@@ -447,15 +523,15 @@ export class ToolManager {
                 lines.push(`model_provider = "${providerName}"`);
             }
             if (model) {
-                lines.push(`model = "${model}"`);
+                lines.push(`model = ${tomlString(model)}`);
             }
             const reasoningEffort = this.configStore.get('codexReasoningEffort') as string;
             if (reasoningEffort) {
-                lines.push(`model_reasoning_effort = "${reasoningEffort}"`);
+                lines.push(`model_reasoning_effort = ${tomlString(reasoningEffort)}`);
             }
             const verbosity = this.configStore.get('codexVerbosity') as string;
             if (verbosity) {
-                lines.push(`model_verbosity = "${verbosity}"`);
+                lines.push(`model_verbosity = ${tomlString(verbosity)}`);
             }
             lines.push('model_context_window = 1000000');
             lines.push('model_auto_compact_token_limit = 9000000');
@@ -467,13 +543,19 @@ export class ToolManager {
                 lines.push('sandbox_mode = "danger-full-access"');
             }
 
+            // User/Codex-written root keys (notice acknowledgements etc.) go
+            // here, still above the first section header.
+            if (userConfig.root) {
+                lines.push('', userConfig.root);
+            }
+
             // ── Sections ──
             if (baseUrl) {
                 const providerName = '4routerai';
                 lines.push('');
                 lines.push(`[model_providers.${providerName}]`);
                 lines.push(`name = "${providerName}"`);
-                lines.push(`base_url = "${baseUrl}"`);
+                lines.push(`base_url = ${tomlString(baseUrl)}`);
                 lines.push(`wire_api = "responses"`);
                 // Codex >=0.148 sends NO Authorization header for a custom
                 // provider unless the provider opts into one of its auth
@@ -492,18 +574,11 @@ export class ToolManager {
             lines.push('[analytics]');
             lines.push('enabled = false');
 
-            // ── Preserve user preferences from existing config ──
-            const configFile = path.join(codexHomeDir, 'config.toml');
-            let userConfig = '';
-            if (fs.existsSync(configFile)) {
-                try {
-                    userConfig = preserveUserConfig(fs.readFileSync(configFile, 'utf-8'));
-                } catch (e) {
-                    console.warn(`[ToolManager] Failed to read existing config.toml, starting fresh:`, e);
-                }
+            if (userConfig.sections) {
+                lines.push('', userConfig.sections);
             }
 
-            const configToml = lines.join('\n') + '\n' + userConfig;
+            const configToml = lines.join('\n') + '\n';
             fs.writeFileSync(configFile, configToml, 'utf-8');
             console.log(`[ToolManager] Wrote Codex config to ${configFile}`);
 
