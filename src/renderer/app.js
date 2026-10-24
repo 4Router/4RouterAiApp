@@ -728,6 +728,7 @@ function setupAppUpdateButton() {
                     statusText.textContent = '下载完成，请安装';
                 } else {
                     statusText.textContent = '下载失败';
+                    btn.title = `下载失败：${result.error || '未知错误'}\n可稍后重试，已下载的部分会继续使用`;
                     console.error('Download failed:', result.error);
                     setTimeout(() => {
                         statusText.textContent = '点击更新';
@@ -762,6 +763,11 @@ function setupAppUpdateButton() {
             } else if (result.hasUpdate) {
                 statusText.textContent = `新版本 v${result.latestVersion}`;
                 btn.title = '未找到下载文件，请前往 GitHub 手动下载';
+            } else if (result.latestVersion === 'unknown') {
+                // Network failure, not "up to date" — don't claim otherwise.
+                statusText.textContent = '检查失败';
+                btn.title = '无法获取版本信息，请检查网络或在设置中配置代理';
+                setTimeout(() => { statusText.textContent = '检查更新'; }, 3000);
             } else {
                 statusText.textContent = '已是最新';
                 btn.title = `当前版本: v${result.currentVersion}`;

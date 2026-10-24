@@ -1,12 +1,11 @@
 import { app, shell, BrowserWindow } from 'electron';
-import * as https from 'https';
-import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { isNewerVersion } from './version-compare';
-import { pickInstallerAsset, verifyDownloadedAsset, ReleaseAsset } from './update-integrity';
+import { agreeOnRelease, pickInstallerAsset, verifyDownloadedAsset, ReleaseAsset } from './update-integrity';
+import { downloadResumable, getText, NetOptions, probeSource, rankProbes } from './update-net';
 
 const GITHUB_API_URL = 'https://api.github.com/repos/4Router/4RouterAiApp/releases/latest';
 const REMOTE_CONFIG_URL = 'https://raw.githubusercontent.com/4Router/4RouterAiApp/main/remote-config.json';
@@ -69,93 +68,10 @@ export interface DownloadResult {
 }
 
 
-/**
- * Helper: make an HTTPS GET request and return the response body as a string.
- * Supports optional HTTP(S) proxy.
- */
-function httpsGet(url: string, proxy?: string): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }> {
-    return new Promise((resolve, reject) => {
-        const parsedUrl = new URL(url);
-        const options: https.RequestOptions = {
-            hostname: parsedUrl.hostname,
-            port: parsedUrl.port || 443,
-            path: parsedUrl.pathname + parsedUrl.search,
-            method: 'GET',
-            headers: {
-                'User-Agent': `4RouterAi/${app.getVersion()}`,
-                'Accept': 'application/vnd.github.v3+json',
-            },
-            timeout: 15000,
-        };
+const RELEASE_URL_PREFIX = 'https://github.com/4Router/4RouterAiApp/releases/download/';
 
-        // Use proxy if configured
-        if (proxy) {
-            try {
-                const proxyUrl = new URL(proxy);
-                options.hostname = proxyUrl.hostname;
-                options.port = parseInt(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
-                options.path = url; // Full URL as path for proxy
-                (options.headers as Record<string, string>)['Host'] = parsedUrl.hostname;
-            } catch { /* ignore invalid proxy */ }
-        }
-
-        const req = https.request(options, (res) => {
-            let body = '';
-            res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-            res.on('end', () => {
-                resolve({ statusCode: res.statusCode || 0, headers: res.headers, body });
-            });
-        });
-
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
-        req.end();
-    });
-}
-
-/**
- * Helper: speed-test a single proxy mirror with a HEAD request.
- * Returns the response time in ms, or Infinity on failure.
- */
-function testMirrorSpeed(mirrorBaseUrl: string, downloadUrl: string, timeoutMs: number = 5000): Promise<{ name: string; url: string; timeMs: number }> {
-    return new Promise((resolve) => {
-        const proxiedUrl = mirrorBaseUrl + downloadUrl;
-        const parsedUrl = new URL(proxiedUrl);
-        const isHttps = parsedUrl.protocol === 'https:';
-        const lib = isHttps ? https : http;
-
-        const start = Date.now();
-        const options: http.RequestOptions = {
-            hostname: parsedUrl.hostname,
-            port: parsedUrl.port || (isHttps ? 443 : 80),
-            path: parsedUrl.pathname + parsedUrl.search,
-            method: 'HEAD',
-            headers: { 'User-Agent': `4RouterAi/${app.getVersion()}` },
-            timeout: timeoutMs,
-        };
-
-        const req = lib.request(options, (res) => {
-            const timeMs = Date.now() - start;
-            // Accept 2xx and 3xx as success
-            const code = res.statusCode || 0;
-            if (code >= 200 && code < 400) {
-                resolve({ name: mirrorBaseUrl, url: proxiedUrl, timeMs });
-            } else {
-                resolve({ name: mirrorBaseUrl, url: proxiedUrl, timeMs: Infinity });
-            }
-            res.resume(); // Consume response to free memory
-        });
-
-        req.on('error', () => {
-            resolve({ name: mirrorBaseUrl, url: proxiedUrl, timeMs: Infinity });
-        });
-        req.on('timeout', () => {
-            req.destroy();
-            resolve({ name: mirrorBaseUrl, url: proxiedUrl, timeMs: Infinity });
-        });
-        req.end();
-    });
-}
+/** Mirrors that must report the same release before their word is taken. */
+const MIRROR_QUORUM = 2;
 
 export class AppUpdater {
     private configStore: ConfigStore;
@@ -171,22 +87,26 @@ export class AppUpdater {
         this.mainWindow = win;
     }
 
+    /** Proxy and identification shared by every request the updater makes. */
+    private netOptions(headers: Record<string, string> = {}): NetOptions {
+        const proxy = (this.configStore.get('proxy') as string | undefined)?.trim();
+        return {
+            proxy: proxy || undefined,
+            headers: { 'User-Agent': `4RouterAi/${app.getVersion()}`, ...headers },
+        };
+    }
+
     /**
      * Check the latest GitHub release for updates.
      */
     async checkForUpdate(): Promise<UpdateCheckResult> {
         const currentVersion = app.getVersion();
-        const proxy = this.configStore.get('proxy') as string | undefined;
+        const unknown = { hasUpdate: false, currentVersion, latestVersion: 'unknown', releaseNotes: '', downloadUrl: '' };
 
         try {
-            const resp = await httpsGet(GITHUB_API_URL, proxy || undefined);
+            const release = await this.fetchLatestRelease();
+            if (!release) return unknown;
 
-            if (resp.statusCode !== 200) {
-                console.error(`[AppUpdater] GitHub API returned ${resp.statusCode}`);
-                return { hasUpdate: false, currentVersion, latestVersion: 'unknown', releaseNotes: '', downloadUrl: '' };
-            }
-
-            const release = JSON.parse(resp.body);
             const latestVersion = (release.tag_name || '').replace(/^v/, '');
             const releaseNotes = release.body || '';
 
@@ -205,42 +125,79 @@ export class AppUpdater {
             return { hasUpdate, currentVersion, latestVersion, releaseNotes, downloadUrl };
         } catch (err) {
             console.error('[AppUpdater] Failed to check for update:', err);
-            return { hasUpdate: false, currentVersion, latestVersion: 'unknown', releaseNotes: '', downloadUrl: '' };
+            return unknown;
         }
     }
 
     /**
-     * Speed-test all proxy mirrors and return the responsive ones, fastest first.
+     * The latest release, from api.github.com directly (or via the configured
+     * proxy) when it answers. When it doesn't — unreachable, or rate-limited
+     * behind a shared NAT — ask the mirrors, but only accept a release that
+     * MIRROR_QUORUM of them describe identically: one mirror alone could hand
+     * out a forged digest together with the matching forged installer.
      */
-    async rankProxies(downloadUrl: string): Promise<string[]> {
-        console.log(`[AppUpdater] Speed testing ${PROXY_MIRRORS.length} proxy mirrors...`);
+    private async fetchLatestRelease(): Promise<any | null> {
+        const opts = this.netOptions({ 'Accept': 'application/vnd.github.v3+json' });
+
+        try {
+            const resp = await getText(GITHUB_API_URL, { ...opts, idleTimeoutMs: 15000 });
+            if (resp.statusCode === 200) return JSON.parse(resp.body);
+            console.warn(`[AppUpdater] GitHub API returned ${resp.statusCode}, asking mirrors`);
+        } catch (err) {
+            console.warn('[AppUpdater] GitHub API unreachable, asking mirrors:', err);
+        }
+
+        const replies = await Promise.all(PROXY_MIRRORS.map(async ([_name, baseUrl]) => {
+            try {
+                const resp = await getText(baseUrl + GITHUB_API_URL, { ...opts, idleTimeoutMs: 10000 });
+                return resp.statusCode === 200 ? JSON.parse(resp.body) : null;
+            } catch {
+                return null;
+            }
+        }));
+        const answered = replies.filter(Boolean);
+        const release = agreeOnRelease(answered, MIRROR_QUORUM, RELEASE_URL_PREFIX);
+        console.log(`[AppUpdater] ${answered.length} mirror(s) returned release info; quorum ${release ? 'reached' : 'not reached'}`);
+        return release;
+    }
+
+    /**
+     * Probe every source with a small ranged GET and return the usable ones,
+     * resumable first and fastest first. Falls back to all of them, unranked,
+     * when none answers in time — the download itself is verified anyway.
+     */
+    private async rankSources(asset: ReleaseAsset): Promise<string[]> {
+        const candidates = [asset.url, ...PROXY_MIRRORS.map(([_name, baseUrl]) => baseUrl + asset.url)];
+        console.log(`[AppUpdater] Probing ${candidates.length} download sources...`);
 
         this.sendProgress(-1, '正在测速选择最快的下载节点...');
 
-        const results = await Promise.all(
-            PROXY_MIRRORS.map(([_name, baseUrl]) => testMirrorSpeed(baseUrl, downloadUrl))
-        );
+        const magic = asset.name.endsWith('.exe') ? Buffer.from('MZ') : undefined;
+        const opts = { ...this.netOptions(), idleTimeoutMs: 8000 };
+        const ranked = rankProbes(await Promise.all(
+            candidates.map(url => probeSource(url, { size: asset.size, magic }, opts))
+        ));
 
-        // Sort by response time
-        results.sort((a, b) => a.timeMs - b.timeMs);
-
-        const alive = results.filter(r => r.timeMs !== Infinity);
-        if (alive.length > 0) {
-            console.log(`[AppUpdater] Fastest mirror: ${alive[0].name} (${alive[0].timeMs}ms)`);
-        } else {
-            console.log('[AppUpdater] No proxy mirrors responded');
+        if (ranked.length === 0) {
+            console.log('[AppUpdater] No source passed the probe; trying all of them');
+            return candidates;
         }
-        return alive.map(r => r.url);
+        console.log(`[AppUpdater] ${ranked.length} usable source(s), fastest: ${ranked[0]}`);
+        // Keep the rest as a last resort: a probe can time out on a source
+        // that would still have worked.
+        return [...ranked, ...candidates.filter(url => !ranked.includes(url))];
     }
 
     /**
      * Download the update installer, verify it against the digest GitHub
      * published for the asset, and only then launch it.
      *
-     * Mirrors are third-party proxies, so a download from one is never trusted
-     * on its own: a mismatch discards the file and moves on to the next mirror,
-     * ending with the direct github.com URL. A release without a published
-     * digest skips the mirrors entirely and is fetched from GitHub directly.
+     * The transfer resumes across dropped connections and across sources, and
+     * a partial file left by an earlier attempt is picked up again. Mirrors
+     * are third-party proxies, so the result is never trusted on its own: if
+     * the assembled file fails verification, each source is retried alone so
+     * a bad one can't spoil the rest. A release without a published digest
+     * skips the mirrors entirely and is fetched from GitHub directly.
      */
     async downloadUpdate(downloadUrl: string): Promise<DownloadResult> {
         const asset = this.latestAsset;
@@ -249,42 +206,42 @@ export class AppUpdater {
         }
 
         try {
+            const fileName = path.basename(new URL(asset.url).pathname) || '4RouterAi-Setup.exe';
+            const filePath = path.join(os.tmpdir(), fileName);
+            const partPath = `${filePath}.part`;
+
+            // Already downloaded by an earlier attempt?
+            if (fs.existsSync(filePath)) {
+                try {
+                    await verifyDownloadedAsset(filePath, asset);
+                    return this.launchInstaller(filePath);
+                } catch {
+                    fs.rmSync(filePath, { force: true });
+                }
+            }
+
             // Step 1: Pick download sources
-            const MAX_MIRROR_ATTEMPTS = 3;
-            const sources = asset.sha256
-                ? [...(await this.rankProxies(asset.url)).slice(0, MAX_MIRROR_ATTEMPTS), asset.url]
-                : [asset.url];
             if (!asset.sha256) {
                 console.warn('[AppUpdater] Release asset has no published digest; downloading from GitHub directly');
             }
+            const sources = asset.sha256 ? await this.rankSources(asset) : [asset.url];
 
-            const fileName = path.basename(new URL(asset.url).pathname) || '4RouterAi-Setup.exe';
-            const filePath = path.join(os.tmpdir(), fileName);
-
-            // Step 2: Download and verify, falling through to the next source on failure
-            let lastError: unknown = null;
-            for (const sourceUrl of sources) {
-                console.log(`[AppUpdater] Downloading from: ${sourceUrl}`);
-                this.sendProgress(0, `正在下载 ${fileName}...`);
-                try {
-                    await this.downloadFile(sourceUrl, filePath);
-                    this.sendProgress(100, '正在校验安装包...');
-                    await verifyDownloadedAsset(filePath, asset);
-                } catch (err) {
-                    console.error(`[AppUpdater] Download from ${sourceUrl} rejected:`, err);
-                    fs.rmSync(filePath, { force: true });
-                    lastError = err;
-                    continue;
-                }
-
-                this.sendProgress(100, '下载完成！');
-
-                // Step 3: Open the verified file
-                shell.openPath(filePath);
-
-                return { success: true, filePath };
+            // Step 2: Download (resuming wherever possible) and verify
+            this.sendProgress(0, `正在下载 ${fileName}...`);
+            if (await this.downloadAndVerify(sources, partPath, asset)) {
+                fs.renameSync(partPath, filePath);
+                return this.launchInstaller(filePath);
             }
-            throw lastError ?? new Error('没有可用的下载源');
+
+            console.warn('[AppUpdater] Assembled download failed verification; retrying each source alone');
+            for (const source of sources) {
+                this.sendProgress(0, '校验未通过，正在更换下载源...');
+                if (await this.downloadAndVerify([source], partPath, asset)) {
+                    fs.renameSync(partPath, filePath);
+                    return this.launchInstaller(filePath);
+                }
+            }
+            throw new Error('所有下载源的安装包都未通过校验');
         } catch (err: any) {
             console.error('[AppUpdater] Download failed:', err);
             return { success: false, error: err.message || String(err) };
@@ -292,94 +249,44 @@ export class AppUpdater {
     }
 
     /**
-     * Download a file with progress reporting. Follows redirects.
+     * Resumable download into `partPath`, then size + SHA-256 check. Resolves
+     * false (and discards the file) when the bytes are wrong; rejects when no
+     * source could deliver the whole file.
      */
-    private downloadFile(url: string, destPath: string, redirectCount: number = 0): Promise<void> {
-        if (redirectCount > 5) {
-            return Promise.reject(new Error('Too many redirects'));
-        }
-
-        return new Promise((resolve, reject) => {
-            const parsedUrl = new URL(url);
-            const isHttps = parsedUrl.protocol === 'https:';
-            const lib = isHttps ? https : http;
-
-            const options: http.RequestOptions = {
-                hostname: parsedUrl.hostname,
-                port: parsedUrl.port || (isHttps ? 443 : 80),
-                path: parsedUrl.pathname + parsedUrl.search,
-                method: 'GET',
-                headers: { 'User-Agent': `4RouterAi/${app.getVersion()}` },
-                timeout: 60000,
-            };
-
-            const req = lib.request(options, (res) => {
-                // Follow redirects
-                if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                    res.resume();
-                    this.downloadFile(res.headers.location, destPath, redirectCount + 1)
-                        .then(resolve)
-                        .catch(reject);
-                    return;
+    private async downloadAndVerify(sources: string[], partPath: string, asset: ReleaseAsset): Promise<boolean> {
+        let lastPercent = -1;
+        await downloadResumable(sources, partPath, {
+            ...this.netOptions(),
+            expectedSize: asset.size,
+            onProgress: (received, total) => {
+                if (total <= 0) return;
+                const percent = Math.floor((received / total) * 100);
+                if (percent !== lastPercent) {
+                    lastPercent = percent;
+                    this.sendProgress(percent);
                 }
-
-                if (!res.statusCode || res.statusCode >= 400) {
-                    res.resume();
-                    reject(new Error(`HTTP ${res.statusCode}`));
-                    return;
-                }
-
-                const totalBytes = parseInt(res.headers['content-length'] || '0', 10);
-                let downloadedBytes = 0;
-                let lastProgressPercent = 0;
-
-                const file = fs.createWriteStream(destPath);
-                res.pipe(file);
-
-                res.on('data', (chunk: Buffer) => {
-                    downloadedBytes += chunk.length;
-                    if (totalBytes > 0) {
-                        const percent = Math.round((downloadedBytes / totalBytes) * 100);
-                        if (percent !== lastProgressPercent) {
-                            lastProgressPercent = percent;
-                            this.sendProgress(percent);
-                        }
-                    }
-                });
-
-                // Resolve on 'close', not 'finish': the handle must be released
-                // before the file is hashed and handed to the installer.
-                file.on('close', () => {
-                    if (totalBytes > 0 && downloadedBytes !== totalBytes) {
-                        reject(new Error(`下载不完整（${downloadedBytes}/${totalBytes} 字节）`));
-                    } else {
-                        resolve();
-                    }
-                });
-
-                // pipe() does not forward source errors; a connection dropped
-                // mid-body would otherwise leave this promise pending forever.
-                res.on('error', (err) => {
-                    file.destroy();
-                    reject(err);
-                });
-
-                file.on('error', (err) => {
-                    fs.unlink(destPath, () => { /* ignore */ });
-                    reject(err);
-                });
-            });
-
-            req.on('error', (err) => {
-                fs.unlink(destPath, () => { /* ignore */ });
-                reject(err);
-            });
-            req.on('timeout', () => {
-                req.destroy();
-                reject(new Error('Download timed out'));
-            });
-            req.end();
+            },
+            onRetry: (offset, err) => {
+                console.warn(`[AppUpdater] Transfer interrupted at ${offset} bytes:`, err);
+                this.sendProgress(lastPercent, `网络中断，正在续传（已下载 ${Math.max(lastPercent, 0)}%）...`);
+            },
         });
+
+        this.sendProgress(100, '正在校验安装包...');
+        try {
+            await verifyDownloadedAsset(partPath, asset);
+            return true;
+        } catch (err) {
+            console.error('[AppUpdater] Verification failed:', err);
+            fs.rmSync(partPath, { force: true });
+            return false;
+        }
+    }
+
+    private launchInstaller(filePath: string): DownloadResult {
+        this.sendProgress(100, '下载完成！');
+        shell.openPath(filePath);
+        return { success: true, filePath };
     }
 
     private sendProgress(percent: number, message?: string) {
@@ -398,26 +305,31 @@ export class AppUpdater {
         try {
             // Race all proxy mirrors + direct URL to get the fastest response
             const configUrl = REMOTE_CONFIG_URL;
+            const opts = { ...this.netOptions(), idleTimeoutMs: 15000 };
             const fetchAttempts = [
                 // Direct fetch
-                httpsGet(configUrl).catch(() => null),
+                getText(configUrl, opts).catch(() => null),
                 // Through mirrors
                 ...PROXY_MIRRORS.map(([_name, baseUrl]) =>
-                    httpsGet(baseUrl + configUrl).catch(() => null)
+                    getText(baseUrl + configUrl, opts).catch(() => null)
                 ),
             ];
 
-            // Use Promise.any to get the first successful response
-            const resp = await Promise.any(
+            // Use Promise.any to get the first successful response. Parse
+            // inside the race: some mirrors answer 200 with an HTML page, and
+            // winning with one of those would sink the whole check.
+            const remoteConfig = await Promise.any(
                 fetchAttempts.map(async (attempt) => {
                     const r = await attempt;
-                    if (r && r.statusCode === 200 && r.body) return r;
+                    if (r && r.statusCode === 200 && r.body) {
+                        const parsed = JSON.parse(r.body);
+                        if (parsed && typeof parsed === 'object') return parsed;
+                    }
                     throw new Error('not ok');
                 })
             );
 
             console.log('[AppUpdater] Remote config fetched successfully');
-            const remoteConfig = JSON.parse(resp.body);
             const changes: ConfigChange[] = [];
 
             // Compare models

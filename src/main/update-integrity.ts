@@ -47,6 +47,33 @@ export function pickInstallerAsset(assets: unknown): ReleaseAsset | null {
     };
 }
 
+/**
+ * Pick the release that at least `minAgree` independent sources describe
+ * identically (same tag, installer URL, size and digest).
+ *
+ * Used when api.github.com itself is unreachable and the release JSON can
+ * only be had through third-party mirrors. A single mirror could hand out a
+ * forged digest together with a matching forged installer; requiring several
+ * to agree means one compromised operator is not enough. Releases without a
+ * digest, or whose installer isn't under `urlPrefix`, never count.
+ */
+export function agreeOnRelease(releases: unknown[], minAgree: number, urlPrefix: string): any | null {
+    const tally = new Map<string, { release: any; count: number }>();
+    for (const release of releases as any[]) {
+        const asset = pickInstallerAsset(release?.assets);
+        if (!asset?.sha256 || !asset.url.startsWith(urlPrefix) || typeof release.tag_name !== 'string') continue;
+        const key = [release.tag_name, asset.url, asset.size, asset.sha256].join('\n');
+        const entry = tally.get(key);
+        if (entry) entry.count++;
+        else tally.set(key, { release, count: 1 });
+    }
+    let best: { release: any; count: number } | null = null;
+    for (const entry of tally.values()) {
+        if (entry.count >= minAgree && (!best || entry.count > best.count)) best = entry;
+    }
+    return best?.release ?? null;
+}
+
 /** Stream a file through SHA-256 and return the lower-case hex digest. */
 export function sha256File(filePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
