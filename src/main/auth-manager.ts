@@ -72,7 +72,7 @@ export class AuthManager {
      * Logout: clear the stored accessToken.
      */
     logout(): void {
-        this.configStore.setApiKey(ACCESS_TOKEN_KEY, '');
+        this.configStore.removeApiKey(ACCESS_TOKEN_KEY);
     }
 
     /**
