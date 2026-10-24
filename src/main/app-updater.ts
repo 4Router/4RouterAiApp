@@ -210,8 +210,9 @@ export class AppUpdater {
             const filePath = path.join(os.tmpdir(), fileName);
             const partPath = `${filePath}.part`;
 
-            // Already downloaded by an earlier attempt?
-            if (fs.existsSync(filePath)) {
+            // Already downloaded by an earlier attempt? Only worth trusting
+            // with a digest to check it against.
+            if (asset.sha256 && fs.existsSync(filePath)) {
                 try {
                     await verifyDownloadedAsset(filePath, asset);
                     return this.launchInstaller(filePath);

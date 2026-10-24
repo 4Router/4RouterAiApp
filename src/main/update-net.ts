@@ -75,8 +75,10 @@ async function requestOnce(url: URL, method: string, opts: NetOptions): Promise<
     const headers: Record<string, string> = { ...opts.headers };
 
     let options: https.RequestOptions;
+    let lib: typeof http | typeof https = isHttps ? https : http;
+    let tunnel: net.Socket | null = null;
     if (proxy && isHttps) {
-        const socket = await connectTunnel(proxy, url.hostname, port, idle);
+        const socket = tunnel = await connectTunnel(proxy, url.hostname, port, idle);
         options = {
             host: url.hostname,
             port,
@@ -86,9 +88,10 @@ async function requestOnce(url: URL, method: string, opts: NetOptions): Promise<
         };
     } else if (proxy) {
         // Plain-HTTP target: the proxy takes the absolute URL as the path.
+        lib = proxy.protocol === 'https:' ? https : http;
         options = {
             host: proxy.hostname,
-            port: Number(proxy.port) || 80,
+            port: Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80),
             path: url.href,
         };
         Object.assign(headers, { Host: url.host }, proxyAuthHeader(proxy));
@@ -97,10 +100,12 @@ async function requestOnce(url: URL, method: string, opts: NetOptions): Promise<
     }
 
     return new Promise((resolve, reject) => {
-        const lib = isHttps ? https : http;
         const req = lib.request({ ...options, method, headers, timeout: idle }, resolve);
         req.once('timeout', () => req.destroy(new Error('网络无响应，连接已超时')));
-        req.on('error', reject);
+        req.on('error', (err) => {
+            tunnel?.destroy();
+            reject(err);
+        });
         req.end();
     });
 }
@@ -339,6 +344,9 @@ async function fetchInto(source: string, destPath: string, offset: number, opts:
     });
 }
 
+/** An attempt must move at least this much to earn a retry on the same source. */
+const MIN_PROGRESS_BYTES = 64 * 1024;
+
 /**
  * Download a file that may be served by any of `sources` (identical bytes
  * expected; verify the result yourself). Interrupted transfers continue from
@@ -366,8 +374,9 @@ export async function downloadResumable(sources: string[], destPath: string, opt
             } catch (err: any) {
                 lastError = err;
                 opts.onRetry?.(fileSize(destPath), err);
-                // No bytes this time: the source is dead or refusing — move on.
-                if (!err?.received) break;
+                // Little or nothing this time: the source is dead, refusing,
+                // or trickling — move on rather than burn idle timeouts on it.
+                if (!(err?.received >= MIN_PROGRESS_BYTES)) break;
             }
         }
     }

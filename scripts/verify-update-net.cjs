@@ -90,6 +90,7 @@ function handler(req, res) {
         case '/file': return sendRange(req, res, route);
         case '/flaky': return sendRange(req, res, route, { dropAfter: 200 * 1024 });
         case '/stall': return sendRange(req, res, route, { stallAfter: 100 * 1024 });
+        case '/trickle': return sendRange(req, res, route, { dropAfter: 1024 });
         case '/redirect':
             res.writeHead(302, { Location: '/file' });
             return res.end();
@@ -219,6 +220,11 @@ function makeProxy(requireAuth) {
         `${fs.existsSync(dl('stall.part')) && fs.statSync(dl('stall.part')).size}`);
     await downloadResumable([`${base}/file`], dl('stall.part'), opts);
     check('换个源把卡住的那份续完', sha(dl('stall.part')) === PAYLOAD_SHA);
+
+    served['/trickle'] = 0;
+    await downloadResumable([`${base}/trickle`, `${base}/file`], dl('trickle.part'), opts);
+    check('只挤出一点就断的源只试一次就换', served['/trickle'] === 1024 && sha(dl('trickle.part')) === PAYLOAD_SHA,
+        `trickle served ${served['/trickle']}`);
 
     const allDead = await rejects(downloadResumable(['http://127.0.0.1:1/a', `${base}/html`], dl('dead.part'), opts));
     check('所有源都不可用 → 报错', allDead !== null);
