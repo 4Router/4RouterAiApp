@@ -4,6 +4,20 @@ import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { buildSanitizedEnv } from './process-env';
 import { compareVersions, isNewerVersion } from './version-compare';
+import {
+    OFFICIAL_REGISTRY,
+    CHINA_MIRROR_REGISTRY,
+    NPM_INSTALL_TIMEOUT_MS,
+    NPM_VIEW_TIMEOUT_MS,
+    RegistryProbe,
+    buildNpmInstallArgs,
+    buildNpmNetworkArgs,
+    describeInstallTimeout,
+    isTimeoutKill,
+    pickTargetVersion,
+    planInstall,
+    registryLabel,
+} from './npm-install-plan';
 
 export interface ToolInfo {
     id: string;
@@ -30,9 +44,6 @@ interface ResolvedToolPath {
     source: 'bundled' | 'global';
     launchMode: 'node-script' | 'command';
 }
-
-const OFFICIAL_REGISTRY = 'https://registry.npmjs.org/';
-const CHINA_MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
 
 /** First Codex release with `--no-daemon`; older releases reject the flag. */
 const CODEX_NO_DAEMON_MIN_VERSION = '0.156.0';
@@ -117,6 +128,12 @@ export class ToolManager {
             available: false,
         },
     ];
+
+    /**
+     * Runs the bundled npm. A field rather than a direct call so
+     * scripts/verify-tool-update.cjs can stub it without spawning npm.
+     */
+    private runFile: typeof import('child_process').execFile = require('child_process').execFile;
 
     constructor(
         private bundledToolsPath: string,
@@ -573,11 +590,12 @@ export class ToolManager {
             return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
         }
 
-        // Same unified registry strategy as updateTool: official first,
-        // npmmirror as the mainland-China fallback. Keeping the two paths
-        // identical avoids "version seen" ≠ "version installed" mismatches.
-        const latest = await this.npmViewVersion(packageName, OFFICIAL_REGISTRY)
-            ?? await this.npmViewVersion(packageName, CHINA_MIRROR_REGISTRY);
+        // Same version choice as updateTool (pickTargetVersion): official
+        // registry's latest, npmmirror's only when the official one can't be
+        // reached. updateTool then pins that exact version, so the version
+        // seen here is the version that gets installed.
+        const [official, mirror] = await this.probeLatestVersions(packageName);
+        const latest = pickTargetVersion(official, mirror);
         if (!latest) {
             return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
         }
@@ -589,12 +607,36 @@ export class ToolManager {
         return { hasUpdate, currentVersion: tool.version, latestVersion: latest };
     }
 
+    /** The settings-page proxy (e.g. http://127.0.0.1:7890), if any. */
+    private getProxy(): string | undefined {
+        const proxy = (this.configStore.get('proxy') as string | undefined)?.trim();
+        return proxy || undefined;
+    }
+
+    /**
+     * Ask both registries for `latest` at the same time and time each
+     * answer. Concurrent, so an unreachable official registry costs one
+     * NPM_VIEW_TIMEOUT_MS instead of delaying the mirror query behind it.
+     * Going through npm (rather than a hand-rolled HTTPS GET) means the
+     * probe uses the same proxy handling as the install that follows.
+     */
+    private probeLatestVersions(packageName: string): Promise<[RegistryProbe, RegistryProbe]> {
+        const probe = async (registry: string): Promise<RegistryProbe> => {
+            const start = Date.now();
+            const version = await this.npmViewVersion(packageName, registry);
+            return { registry, version, elapsedMs: Date.now() - start };
+        };
+        return Promise.all([probe(OFFICIAL_REGISTRY), probe(CHINA_MIRROR_REGISTRY)]);
+    }
+
     private npmViewVersion(packageName: string, registry: string): Promise<string | null> {
         return new Promise((resolve) => {
-            const { execFile } = require('child_process') as typeof import('child_process');
-            const args = [this.getBundledNpmCli(), 'view', packageName, 'version', '--registry', registry];
-            execFile(this.getBundledNodeExecutable(), args, {
-                timeout: 15000,
+            const args = [
+                this.getBundledNpmCli(), 'view', packageName, 'version',
+                ...buildNpmNetworkArgs(registry, this.getProxy()),
+            ];
+            this.runFile(this.getBundledNodeExecutable(), args, {
+                timeout: NPM_VIEW_TIMEOUT_MS,
                 windowsHide: true,
                 env: buildSanitizedEnv(this.buildRuntimeEnv()),
             }, (error, stdout) => {
@@ -605,11 +647,15 @@ export class ToolManager {
 
     /**
      * Update a bundled tool to the latest version by running
-     * `npm install <package>@latest` in the tool's bundled directory.
+     * `npm install <package>@<version>` in the tool's bundled directory.
      */
     async updateTool(toolId: string): Promise<{ success: boolean; version?: string; error?: string }> {
         const tool = this.toolDefinitions.find(t => t.id === toolId);
         if (!tool) return { success: false, error: 'Unknown tool' };
+
+        if (!this.hasBundledRuntime()) {
+            return { success: false, error: 'Bundled Node.js runtime is missing' };
+        }
 
         const packageName = toolId === 'claude-code'
             ? '@anthropic-ai/claude-code'
@@ -628,25 +674,37 @@ export class ToolManager {
             fs.writeFileSync(pkgJsonPath, '{"private":true}', 'utf-8');
         }
 
+        // Pin the version first, then install it from whichever registry
+        // answered faster — see planInstall for the full reasoning. The
+        // other registry is the fallback (a lagging mirror fails fast with
+        // ETARGET), unless the failure is one a different registry can't
+        // fix: a permission error, or a timeout (the link itself is too slow
+        // — another 30-minute attempt would only double the wait).
+        const [official, mirror] = await this.probeLatestVersions(packageName);
+        const plan = planInstall(official, mirror);
+        const spec = `${packageName}@${plan.spec}`;
+        const [primary, secondary] = plan.registries;
+
         console.log(`[ToolManager] Updating ${toolId} in ${toolDir}`);
-        console.log(`[ToolManager] Package: ${packageName}@latest`);
+        console.log(`[ToolManager] Package: ${spec}`, {
+            official: `${official.version ?? 'unreachable'} (${official.elapsedMs}ms)`,
+            npmmirror: `${mirror.version ?? 'unreachable'} (${mirror.elapsedMs}ms)`,
+            order: plan.registries.map(registryLabel),
+        });
 
-        // Registry strategy is explicit and unified — `--registry` overrides
-        // any user ~/.npmrc, so every install behaves the same: official
-        // registry first; direct connections to registry.npmjs.org are
-        // unreliable from mainland China, so on failure retry against
-        // npmmirror — unless the failure is a permission error a mirror
-        // can't fix.
-        const result = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
+        const result = await this.npmInstall(spec, toolDir, primary);
         if (!result.success) {
-            if (this.isPermissionError(result.error)) return result;
+            if (result.timedOut || this.isPermissionError(result.error)) {
+                return { success: false, error: result.error };
+            }
 
-            console.log(`[ToolManager] Official-registry install failed, retrying with npmmirror...`);
-            const mirrorResult = await this.npmInstall(packageName, toolDir, CHINA_MIRROR_REGISTRY);
-            if (!mirrorResult.success) {
+            console.log(`[ToolManager] Install from ${registryLabel(primary)} failed, retrying with ${registryLabel(secondary)}...`);
+            const retry = await this.npmInstall(spec, toolDir, secondary);
+            if (!retry.success) {
+                if (retry.timedOut) return { success: false, error: retry.error };
                 return {
                     success: false,
-                    error: `Install failed from both the official registry and npmmirror.\n--- official registry ---\n${result.error}\n--- npmmirror ---\n${mirrorResult.error}`,
+                    error: `Install failed from both the ${registryLabel(primary)} and ${registryLabel(secondary)}.\n--- ${registryLabel(primary)} ---\n${result.error}\n--- ${registryLabel(secondary)} ---\n${retry.error}`,
                 };
             }
         }
@@ -663,8 +721,8 @@ export class ToolManager {
 
         if (!hasPlatformPkg) {
             console.log(`[ToolManager] ${toolId} platform package missing after install, retrying with official registry...`);
-            const fallback = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
-            if (!fallback.success) return fallback;
+            const fallback = await this.npmInstall(spec, toolDir, OFFICIAL_REGISTRY);
+            if (!fallback.success) return { success: false, error: fallback.error };
 
             const hasPlatformPkgRetry = toolId === 'claude-code'
                 ? this.hasClaudeCodePlatformPackage(toolDir)
@@ -689,40 +747,41 @@ export class ToolManager {
     }
 
     private npmInstall(
-        packageName: string,
+        spec: string,
         cwd: string,
-        registry?: string,
-    ): Promise<{ success: boolean; error?: string }> {
+        registry: string,
+    ): Promise<{ success: boolean; error?: string; timedOut?: boolean }> {
         return new Promise((resolve) => {
-            const { execFile } = require('child_process') as typeof import('child_process');
-            if (!this.hasBundledRuntime()) {
-                resolve({ success: false, error: 'Bundled Node.js runtime is missing' });
-                return;
-            }
-
             const npmExec = this.getBundledNodeExecutable();
-            const npmCli = this.getBundledNpmCli();
-            const commandArgs = [npmCli, 'install', `${packageName}@latest`];
-            if (registry) {
-                commandArgs.push('--registry', registry);
-            }
-            console.log(`[ToolManager] Running: ${npmExec} ${commandArgs.join(' ')}`);
+            const proxy = this.getProxy();
+            const commandArgs = [this.getBundledNpmCli(), ...buildNpmInstallArgs(spec, registry, proxy)];
+            // The proxy URL may carry credentials; keep it out of the log.
+            const loggedArgs = commandArgs.map(arg => arg === proxy ? '<proxy>' : arg);
+            console.log(`[ToolManager] Running: ${npmExec} ${loggedArgs.join(' ')}`);
 
-            execFile(npmExec, commandArgs, {
+            this.runFile(npmExec, commandArgs, {
                 cwd,
-                timeout: 120000,
+                timeout: NPM_INSTALL_TIMEOUT_MS,
                 env: buildSanitizedEnv(this.buildRuntimeEnv()),
                 windowsHide: true,
             }, (error: any, stdout: string, stderr: string) => {
                 const output = (stdout || '') + (stderr || '');
                 console.log(`[ToolManager] Install output:`, output);
-                if (error) {
-                    const msg = `${error.message}\n${output}`.trim();
-                    console.error(`[ToolManager] Install failed:`, msg);
-                    resolve({ success: false, error: msg });
-                } else {
+                if (!error) {
                     resolve({ success: true });
+                    return;
                 }
+                // A timeout kill surfaces as a bare `Command failed … ` with
+                // no npm error in the output — say what actually happened.
+                if (isTimeoutKill(error)) {
+                    console.error(`[ToolManager] Install timed out after ${NPM_INSTALL_TIMEOUT_MS}ms (${registryLabel(registry)})`);
+                    resolve({ success: false, error: describeInstallTimeout(proxy), timedOut: true });
+                    return;
+                }
+                let msg = `${error.message}\n${output}`.trim();
+                if (proxy) msg = msg.split(proxy).join('<proxy>');
+                console.error(`[ToolManager] Install failed:`, msg);
+                resolve({ success: false, error: msg });
             });
         });
     }
