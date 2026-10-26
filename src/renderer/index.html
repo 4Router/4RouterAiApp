@@ -528,12 +528,13 @@
         </button>
       </div>
       <div class="modal-body">
-        <p class="modal-desc">检测到远程推荐配置有更新，以下是变动项：</p>
+        <p class="modal-desc">检测到远程推荐配置有更新，勾选要采用的项：</p>
         <div id="config-changes-list"></div>
+        <p class="modal-desc config-diff-note">没勾选的项会被记住，之后不再提示，除非推荐值再次变化。</p>
       </div>
       <div class="modal-footer">
-        <button id="btn-dismiss-config" class="btn-secondary">暂不更新</button>
-        <button id="btn-apply-config" class="btn-primary">应用更新</button>
+        <button id="btn-dismiss-config" class="btn-secondary">都不采用</button>
+        <button id="btn-apply-config" class="btn-primary">应用所选</button>
       </div>
     </div>
   </div>

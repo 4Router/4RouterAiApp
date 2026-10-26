@@ -2629,6 +2629,16 @@ input[type="checkbox"].switch:checked::before {
     border-top: 1px solid var(--border-muted);
 }
 
+.config-diff .config-diff-pick {
+    width: 1%;
+    padding-right: 0;
+}
+
+.config-diff-note {
+    margin: 10px 0 0;
+    font-size: 11.5px;
+}
+
 .config-diff-key {
     font-family: var(--font-mono);
     font-size: 12px;

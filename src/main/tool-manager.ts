@@ -4,6 +4,7 @@ import * as os from 'os';
 import { ConfigStore } from './config-store';
 import { buildSanitizedEnv } from './process-env';
 import { compareVersions, isNewerVersion } from './version-compare';
+import { normalizeEffortLevel } from './remote-config';
 
 export interface ToolInfo {
     id: string;
@@ -397,8 +398,10 @@ export class ToolManager {
             // tool search (defer_loading / tool_reference). Force it on so MCP
             // tools are lazily loaded, saving context window tokens.
             settings.env['ENABLE_TOOL_SEARCH'] = 'true';
-            // Set reasoning effort level for Claude Code.
-            const ccEffort = this.configStore.get('ccEffortLevel') as string;
+            // Set reasoning effort level for Claude Code. Known levels are
+            // lower-cased (a stored "MAX" means max); anything else passes
+            // through untouched in case cc adds a level.
+            const ccEffort = normalizeEffortLevel(this.configStore.get('ccEffortLevel'));
             if (ccEffort) {
                 settings.env['CLAUDE_CODE_EFFORT_LEVEL'] = ccEffort;
             }

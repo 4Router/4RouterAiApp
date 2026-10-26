@@ -13,6 +13,8 @@ interface ConfigSchema {
     codexReasoningEffort: string;
     codexVerbosity: string;
     ccEffortLevel: string;
+    /** Remote-config recommendations the user turned down: configKey → value. */
+    remoteConfigDeclined: Record<string, string>;
     fontSize: number;
     fontFamily: string;
     ccBypassPermissions: boolean;
@@ -54,6 +56,7 @@ const defaults: ConfigSchema = {
     codexReasoningEffort: 'xhigh',
     codexVerbosity: 'high',
     ccEffortLevel: 'high',
+    remoteConfigDeclined: {},
     fontSize: 14,
     fontFamily: 'Cascadia Code, Consolas, monospace',
     ccBypassPermissions: false,

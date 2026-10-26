@@ -415,7 +415,7 @@
             downloadUpdate: function (url) { return invoke('app:download-update', url); },
             onUpdateProgress: function (cb) { return on('app-update:progress', cb); },
             checkRemoteConfig: function () { return invoke('app:check-remote-config'); },
-            applyRemoteConfig: function (config) { return invoke('app:apply-remote-config', config); },
+            applyRemoteConfig: function (config, accepted) { return invoke('app:apply-remote-config', config, accepted); },
             resetAll: function () { return invoke('app:reset-all'); },
         },
         auth: {

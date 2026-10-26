@@ -138,7 +138,7 @@ contextBridge.exposeInMainWorld('routerAi', {
             return () => ipcRenderer.removeListener('app-update:progress', listener);
         },
         checkRemoteConfig: () => ipcRenderer.invoke('app:check-remote-config'),
-        applyRemoteConfig: (config: Record<string, any>) => ipcRenderer.invoke('app:apply-remote-config', config),
+        applyRemoteConfig: (config: Record<string, any>, accepted?: string[]) => ipcRenderer.invoke('app:apply-remote-config', config, accepted),
         resetAll: () => ipcRenderer.invoke('app:reset-all'),
     },
 

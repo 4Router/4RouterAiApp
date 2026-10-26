@@ -171,8 +171,8 @@ export function createHandlers(deps: HandlerDeps): HandlerRegistry {
 
         // ===== Remote Config Sync =====
         'app:check-remote-config': async () => appUpdater.checkRemoteConfig(),
-        'app:apply-remote-config': async (remoteConfig: Record<string, any>) => {
-            appUpdater.applyRemoteConfig(remoteConfig);
+        'app:apply-remote-config': async (remoteConfig: Record<string, any>, accepted?: string[]) => {
+            appUpdater.applyRemoteConfig(remoteConfig, Array.isArray(accepted) ? accepted : undefined);
             return { success: true };
         },
 

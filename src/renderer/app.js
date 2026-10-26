@@ -2576,11 +2576,13 @@ function checkRemoteConfigOnStartup() {
         const changesList = /** @type {HTMLElement} */ ($('#config-changes-list'));
         if (!modal || !changesList) return;
 
-        // Build changes table
+        // Build changes table — one checkbox per recommendation, so taking a
+        // new model doesn't force the rest (e.g. a higher effort level).
         let html = '<table class="config-diff">';
-        html += '<tr><th>配置项</th><th>当前值</th><th></th><th>新值</th></tr>';
+        html += '<tr><th></th><th>配置项</th><th>当前值</th><th></th><th>新值</th></tr>';
         for (const change of result.changes) {
             html += '<tr>';
+            html += `<td class="config-diff-pick"><input type="checkbox" checked data-config-key="${esc(change.configKey)}" aria-label="${esc(change.key)}"></td>`;
             html += `<td class="config-diff-key">${esc(change.key)}</td>`;
             html += `<td class="config-diff-old">${esc(change.oldValue)}</td>`;
             html += `<td class="config-diff-arrow">→</td>`;
@@ -2594,14 +2596,20 @@ function checkRemoteConfigOnStartup() {
         modal.classList.remove('hidden');
 
         const closeModal = () => modal.classList.add('hidden');
+        // Unticked recommendations are remembered as declined and not offered
+        // again until the recommended value changes. Closing with ✕ or the
+        // overlay decides nothing, so the prompt comes back next launch.
+        const resolve = async (/** @type {string[]} */ accepted) => {
+            await api.app.applyRemoteConfig(result.remoteConfig, accepted);
+            closeModal();
+        };
 
         $('#btn-close-config-modal')?.addEventListener('click', closeModal);
-        $('#btn-dismiss-config')?.addEventListener('click', closeModal);
         modal.querySelector('.modal-overlay')?.addEventListener('click', closeModal);
-
-        $('#btn-apply-config')?.addEventListener('click', async () => {
-            await api.app.applyRemoteConfig(result.remoteConfig);
-            closeModal();
+        $('#btn-dismiss-config')?.addEventListener('click', () => resolve([]));
+        $('#btn-apply-config')?.addEventListener('click', () => {
+            const picked = /** @type {NodeListOf<HTMLInputElement>} */ (changesList.querySelectorAll('input[data-config-key]:checked'));
+            resolve(Array.from(picked, input => input.dataset.configKey || ''));
         });
     }).catch(() => { /* ignore startup config check failures */ });
 }

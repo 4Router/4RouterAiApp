@@ -14,7 +14,7 @@
         "build:main": "tsc -p tsconfig.main.json",
         "build:renderer": "vite build",
         "bundle-tools": "node scripts/bundle-tools.mjs",
-        "verify": "npm run build && node scripts/verify-web-auth.cjs && node scripts/verify-version.cjs && node scripts/verify-codex-config.cjs",
+        "verify": "npm run build && node scripts/verify-web-auth.cjs && node scripts/verify-version.cjs && node scripts/verify-codex-config.cjs && node scripts/verify-remote-config.cjs",
         "verify:remote": "npm run build && node scripts/verify-web-auth.cjs",
         "package": "npm run build && npm run bundle-tools && electron-builder --win",
         "start": "electron .",
