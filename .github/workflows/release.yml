@@ -98,10 +98,12 @@ jobs:
   # Both architectures build on the Apple-silicon runner: bundle-tools.mjs
   # downloads the Intel Node runtime and asks npm for the x64 native packages
   # (TARGET_ARCH), and electron-builder fetches the x64 Electron itself.
+  # `macos-latest` rather than a pinned image: pinned macOS labels get retired
+  # (macos-14 already was) and nothing here depends on the OS version.
   build-mac:
     needs: check
     if: needs.check.outputs.exists == 'false'
-    runs-on: macos-14
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
