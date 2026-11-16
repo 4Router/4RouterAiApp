@@ -104,3 +104,17 @@ npm run bundle-tools
 | `npm run package`        | `build && electron-builder --win` |
 | `npm run bundle-tools`   | `node scripts/bundle-tools.mjs`   |
 | `npm start`              | `electron .`                      |
+## macOS 打包
+
+在 macOS 上执行（需要 Node.js 与 Xcode 命令行工具）：
+
+```
+npm install
+bash scripts/build-mac.sh          # 本机架构
+bash scripts/build-mac.sh all      # arm64 + x64 两个 DMG
+```
+
+- 输出：`release/4RouterAi-<版本>-mac-<arch>.dmg`
+- `bundle-tools.mjs` 在 macOS 上下载官方 Node.js 构建（校验 SHA-256），`TARGET_ARCH=x64` 可在 Apple 芯片上交叉打 Intel 包
+- 无 Developer ID 证书时由 `scripts/mac-adhoc-sign.cjs`（afterPack）做 ad-hoc 签名；有证书时 electron-builder 会用 `build/entitlements.mac.plist` 重新签名
+- 仅测试：`npm run build && node scripts/bundle-tools.mjs && npx electron .`

@@ -8,6 +8,7 @@ import { ConfigStore } from './config-store';
 import { AppUpdater } from './app-updater';
 import { AuthManager } from './auth-manager';
 import { KeyProvisioner } from './key-provisioner';
+import { userShell } from './shell-env';
 
 /**
  * Everything the request handlers need from the main process. Passed in so the
@@ -23,6 +24,8 @@ export interface HandlerDeps {
     appUpdater: AppUpdater;
     authManager: AuthManager;
     keyProvisioner: KeyProvisioner;
+    /** Resolves once the login-shell environment is merged (macOS); sessions wait for it. */
+    whenEnvReady?: () => Promise<void>;
     /** Controls the remote web bridge (start/stop, credentials, connected clients). */
     webController: {
         getStatus: () => Promise<Record<string, any>>;
@@ -32,7 +35,7 @@ export interface HandlerDeps {
         rotateToken: () => string;
         rotatePathPrefix: () => Promise<Record<string, any>>;
         regenerateCert: () => Promise<Record<string, any>>;
-        /** Add the local CA to the OS trust store (Windows current-user Root). */
+        /** Add the local CA to the OS trust store (Windows current-user Root / macOS login keychain). */
         trustCert: () => Promise<Record<string, any>>;
         /** Save the CA certificate to a user-chosen path, for other devices. */
         exportCa: () => Promise<Record<string, any>>;
@@ -89,6 +92,7 @@ export function createHandlers(deps: HandlerDeps): HandlerRegistry {
         appUpdater,
         authManager,
         keyProvisioner,
+        whenEnvReady,
         webController,
     } = deps;
 
@@ -101,16 +105,21 @@ export function createHandlers(deps: HandlerDeps): HandlerRegistry {
         'tools:check-update': (toolId: string) => toolManager.checkUpdate(toolId),
 
         // ===== PTY Management =====
-        'pty:create': (toolId: string, cwd?: string) => ptyManager.createSession(toolId, cwd),
+        'pty:create': async (toolId: string, cwd?: string) => {
+            await whenEnvReady?.();
+            return ptyManager.createSession(toolId, cwd);
+        },
         'pty:destroy': (sessionId: string) => ptyManager.destroySession(sessionId),
         // Shared-session sync: list live sessions and replay a session's scrollback.
         'pty:list': () => ptyManager.listSessions(),
         'pty:attach': (sessionId: string) => ptyManager.getBuffer(sessionId),
 
         // ===== Window Titlebar Overlay =====
+        // Windows/Linux only: macOS draws native traffic lights, which have
+        // no overlay to recolour (Electron throws if asked).
         'window:set-titlebar-overlay': (colors: { color: string; symbolColor: string }) => {
             const win = getMainWindow();
-            if (win) {
+            if (win && process.platform !== 'darwin') {
                 win.setTitleBarOverlay({ color: colors.color, symbolColor: colors.symbolColor, height: 38 });
             }
         },
@@ -151,6 +160,14 @@ export function createHandlers(deps: HandlerDeps): HandlerRegistry {
 
         // ===== App Info =====
         'app:get-version': () => getAppVersion(),
+        // Host platform and the shell the Terminal tab opens — also asked by
+        // remote browsers, whose own OS says nothing about the host's shell.
+        'app:get-platform-info': () => ({
+            platform: process.platform,
+            shell: process.platform === 'win32'
+                ? 'PowerShell'
+                : path.basename(userShell()),
+        }),
         'app:is-encryption-available': () => safeStorage.isEncryptionAvailable(),
 
         // ===== App Update =====

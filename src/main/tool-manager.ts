@@ -38,6 +38,32 @@ const CHINA_MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
 const CODEX_NO_DAEMON_MIN_VERSION = '0.156.0';
 
 /**
+ * Root for the embedded tools' isolated config homes (claude-home, codex-home).
+ * Matches Electron's own `appData` location on each platform, so on Windows it
+ * stays %APPDATA%\4RouterAi exactly as before.
+ */
+export function getAppDataRoot(): string {
+    switch (os.platform()) {
+        case 'win32':
+            return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), '4RouterAi');
+        case 'darwin':
+            return path.join(os.homedir(), 'Library', 'Application Support', '4RouterAi');
+        default:
+            return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), '4RouterAi');
+    }
+}
+
+/** Where a user's own `npm i -g` / installer puts CLI shims on POSIX systems. */
+function posixGlobalBinDirs(): string[] {
+    return [
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        path.join(os.homedir(), '.local', 'bin'),
+        path.join(os.homedir(), '.npm-global', 'bin'),
+    ];
+}
+
+/**
  * Extract user-managed sections from an existing Codex config.toml,
  * filtering out host-controlled keys and sections that 4RouterAi
  * regenerates on every launch.
@@ -118,11 +144,24 @@ export class ToolManager {
         },
     ];
 
+    /**
+     * @param bundledToolsPath Node runtime + tool packages shipped with the app.
+     * @param userToolsPath    Writable directory that receives in-app tool
+     *   updates. On macOS the bundled copy lives inside the signed .app, which
+     *   must not be modified (it breaks the code seal and macOS' App Management
+     *   protection may refuse the write), so updates go here instead and the
+     *   newer of the two installs wins. Omitted on Windows, where updates keep
+     *   going into the bundled directory as before.
+     */
     constructor(
         private bundledToolsPath: string,
-        private configStore: ConfigStore
+        private configStore: ConfigStore,
+        private userToolsPath?: string,
     ) {
         console.log('[ToolManager] Bundled tools path:', this.bundledToolsPath);
+        if (this.userToolsPath) {
+            console.log('[ToolManager] User tools path:', this.userToolsPath);
+        }
         this.detectTools();
     }
 
@@ -136,24 +175,58 @@ export class ToolManager {
             }
 
             if (tool.available) {
-                try {
-                    const pkgDir = path.join(this.bundledToolsPath,
-                        tool.id === 'claude-code' ? 'claude-code' : 'codex');
-                    const pkgJsonPath = path.join(pkgDir, 'node_modules',
-                        tool.id === 'claude-code' ? '@anthropic-ai' : '@openai',
-                        tool.id === 'claude-code' ? 'claude-code' : 'codex',
-                        'package.json');
-                    if (fs.existsSync(pkgJsonPath)) {
-                        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
-                        tool.version = pkg.version;
-                    }
-                } catch { /* best-effort */ }
+                const version = this.readInstalledVersion(this.getToolDir(tool.id), tool.id);
+                if (version) tool.version = version;
             }
         }
     }
 
+    private static toolDirName(toolId: string): string {
+        return toolId === 'claude-code' ? 'claude-code' : 'codex';
+    }
+
+    private static packageName(toolId: string): string {
+        return toolId === 'claude-code' ? '@anthropic-ai/claude-code' : '@openai/codex';
+    }
+
+    /** Version of the tool package installed under `toolDir`, or null. */
+    private readInstalledVersion(toolDir: string, toolId: string): string | null {
+        try {
+            const pkgJsonPath = path.join(toolDir, 'node_modules',
+                ...ToolManager.packageName(toolId).split('/'), 'package.json');
+            if (!fs.existsSync(pkgJsonPath)) return null;
+            return JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8')).version || null;
+        } catch {
+            return null;
+        }
+    }
+
+    private getBundledToolDir(toolId: string): string {
+        return path.join(this.bundledToolsPath, ToolManager.toolDirName(toolId));
+    }
+
+    /** Directory that in-app updates install into. */
+    private getWritableToolDir(toolId: string): string {
+        return this.userToolsPath
+            ? path.join(this.userToolsPath, ToolManager.toolDirName(toolId))
+            : this.getBundledToolDir(toolId);
+    }
+
+    /**
+     * The install to run: the newer of the user-updated copy and the bundled
+     * one. Comparing (instead of always preferring the user copy) means a new
+     * app release that ships newer tools isn't shadowed by an older update.
+     */
     private getToolDir(toolId: string): string {
-        return path.join(this.bundledToolsPath, toolId === 'claude-code' ? 'claude-code' : 'codex');
+        const bundledDir = this.getBundledToolDir(toolId);
+        if (!this.userToolsPath) return bundledDir;
+
+        const userDir = this.getWritableToolDir(toolId);
+        const userVersion = this.readInstalledVersion(userDir, toolId);
+        if (!userVersion || !this.hasPlatformPackage(toolId, userDir)) return bundledDir;
+        const bundledVersion = this.readInstalledVersion(bundledDir, toolId);
+        if (!bundledVersion) return userDir;
+        return isNewerVersion(userVersion, bundledVersion) ? userDir : bundledDir;
     }
 
     private getBundledNodeDir(): string {
@@ -246,7 +319,20 @@ export class ToolManager {
         return null;
     }
 
-    private buildRuntimeEnv(extraEnv: Record<string, string> = {}): Record<string, string> {
+    /**
+     * PATH for processes we start.
+     *
+     * `bundledFirst` puts the bundled Node ahead of the user's PATH. npm runs
+     * always need that (install scripts must run on the Node that runs npm).
+     * Interactive tool sessions use it on Windows, where the bundled runtime is
+     * usually the only Node there is; on macOS developers normally manage their
+     * own Node (Homebrew, nvm…), and the commands Claude Code / Codex run for
+     * them must see *that* one, so the bundled runtime is only a fallback.
+     */
+    private buildRuntimeEnv(
+        extraEnv: Record<string, string> = {},
+        bundledFirst = true,
+    ): Record<string, string> {
         const env = { ...extraEnv };
         if (!this.hasBundledRuntime()) {
             return env;
@@ -255,11 +341,11 @@ export class ToolManager {
         const pathKey = Object.keys(process.env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
         const pathSep = os.platform() === 'win32' ? ';' : ':';
         const currentPath = process.env[pathKey] || process.env.PATH || '';
-        env[pathKey] = [
-            this.getBundledNodeDir(),
-            ...this.getBundledGitPathEntries(),
-            currentPath,
-        ].filter(Boolean).join(pathSep);
+        const bundledEntries = [this.getBundledNodeDir(), ...this.getBundledGitPathEntries()];
+        const entries = bundledFirst || os.platform() === 'win32'
+            ? [...bundledEntries, currentPath]
+            : [currentPath, ...bundledEntries];
+        env[pathKey] = entries.filter(Boolean).join(pathSep);
         return env;
     }
 
@@ -267,7 +353,6 @@ export class ToolManager {
         const isWin = os.platform() === 'win32';
         const binExt = isWin ? '.cmd' : '';
         let binName: string;
-        const toolDir = this.getToolDir(toolId);
 
         switch (toolId) {
             case 'claude-code':
@@ -285,10 +370,11 @@ export class ToolManager {
             return { path: bundledScript, source: 'bundled', launchMode: 'node-script' };
         }
 
-        const globalBin = isWin
-            ? path.join(process.env.APPDATA || '', 'npm', binName)
-            : path.join('/usr/local/bin', binName);
-        if (fs.existsSync(globalBin)) {
+        const globalCandidates = isWin
+            ? [path.join(process.env.APPDATA || '', 'npm', binName)]
+            : posixGlobalBinDirs().map(dir => path.join(dir, binName));
+        const globalBin = globalCandidates.find(candidate => fs.existsSync(candidate));
+        if (globalBin) {
             return { path: globalBin, source: 'global', launchMode: 'command' };
         }
 
@@ -315,17 +401,14 @@ export class ToolManager {
         const baseUrl = this.configStore.getBaseUrl(tool.provider);
         const model = this.configStore.getModel(tool.provider);
         const args: string[] = [];
-        const env: Record<string, string> = this.buildRuntimeEnv();
+        const env: Record<string, string> = this.buildRuntimeEnv({}, false);
 
         // =============================================
         // Use CLI FLAGS — highest precedence, guaranteed
         // =============================================
 
         // Shared config root for all embedded tools.
-        const appDataDir = path.join(
-            process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-            '4RouterAi'
-        );
+        const appDataDir = getAppDataRoot();
 
         if (tool.id === 'claude-code') {
             if (os.platform() === 'win32') {
@@ -565,9 +648,7 @@ export class ToolManager {
             return { hasUpdate: false, currentVersion: 'unknown', latestVersion: 'unknown' };
         }
 
-        const packageName = toolId === 'claude-code'
-            ? '@anthropic-ai/claude-code'
-            : '@openai/codex';
+        const packageName = ToolManager.packageName(toolId);
 
         if (!this.hasBundledRuntime()) {
             return { hasUpdate: false, currentVersion: tool.version, latestVersion: 'unknown' };
@@ -611,12 +692,8 @@ export class ToolManager {
         const tool = this.toolDefinitions.find(t => t.id === toolId);
         if (!tool) return { success: false, error: 'Unknown tool' };
 
-        const packageName = toolId === 'claude-code'
-            ? '@anthropic-ai/claude-code'
-            : '@openai/codex';
-
-        const toolDir = path.join(this.bundledToolsPath,
-            toolId === 'claude-code' ? 'claude-code' : 'codex');
+        const packageName = ToolManager.packageName(toolId);
+        const toolDir = this.getWritableToolDir(toolId);
 
         if (!fs.existsSync(toolDir)) {
             fs.mkdirSync(toolDir, { recursive: true });
@@ -655,21 +732,12 @@ export class ToolManager {
         // native binaries via optional dependencies. Chinese mirrors like
         // npmmirror may lag behind on syncing these. If the platform package
         // is missing after install, retry with the official npm registry.
-        const hasPlatformPkg = toolId === 'claude-code'
-            ? this.hasClaudeCodePlatformPackage(toolDir)
-            : toolId === 'codex'
-                ? this.hasCodexPlatformPackage(toolDir)
-                : true;
-
-        if (!hasPlatformPkg) {
+        if (!this.hasPlatformPackage(toolId, toolDir)) {
             console.log(`[ToolManager] ${toolId} platform package missing after install, retrying with official registry...`);
             const fallback = await this.npmInstall(packageName, toolDir, OFFICIAL_REGISTRY);
             if (!fallback.success) return fallback;
 
-            const hasPlatformPkgRetry = toolId === 'claude-code'
-                ? this.hasClaudeCodePlatformPackage(toolDir)
-                : this.hasCodexPlatformPackage(toolDir);
-            if (!hasPlatformPkgRetry) {
+            if (!this.hasPlatformPackage(toolId, toolDir)) {
                 return { success: false, error: 'Platform-specific binary still missing after fallback install' };
             }
         }
@@ -725,6 +793,14 @@ export class ToolManager {
                 }
             });
         });
+    }
+
+    private hasPlatformPackage(toolId: string, toolDir: string): boolean {
+        switch (toolId) {
+            case 'claude-code': return this.hasClaudeCodePlatformPackage(toolDir);
+            case 'codex': return this.hasCodexPlatformPackage(toolDir);
+            default: return true;
+        }
     }
 
     private hasClaudeCodePlatformPackage(toolDir: string): boolean {

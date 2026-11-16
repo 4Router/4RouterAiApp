@@ -38,14 +38,19 @@ const POSIX_ENV_KEYS = [
     'HOME',
     'LANG',
     'LC_ALL',
+    'LC_CTYPE',
     'LOGNAME',
     'SHELL',
     'SHLVL',
+    // Socket path of the user's ssh-agent (launchd sets it on macOS). Without it
+    // `git push`/`git fetch` over SSH from inside the tools can't find any key.
+    'SSH_AUTH_SOCK',
     'TMPDIR',
     'USER',
     'XDG_CACHE_HOME',
     'XDG_CONFIG_HOME',
     'XDG_DATA_HOME',
+    'XDG_RUNTIME_DIR',
 ];
 
 export function buildSanitizedEnv(

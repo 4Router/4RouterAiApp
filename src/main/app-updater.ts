@@ -156,6 +156,33 @@ function testMirrorSpeed(mirrorBaseUrl: string, downloadUrl: string, timeoutMs: 
     });
 }
 
+/**
+ * The release asset this machine should install.
+ *
+ * Windows: the NSIS `.exe` (a `.zip` only as a fallback, never a Mac build).
+ * macOS: the `.dmg` for this CPU, named `…-mac-<arch>.dmg` by electron-builder.
+ * An Intel build running under Rosetta on Apple silicon is steered to the
+ * native arm64 image.
+ */
+function pickReleaseAsset(assets: any[]): string {
+    const usable = assets.filter(a => a && typeof a.name === 'string' && a.browser_download_url);
+    const byName = (test: (name: string) => boolean) =>
+        usable.find(a => test(a.name.toLowerCase()))?.browser_download_url as string | undefined;
+
+    if (process.platform === 'darwin') {
+        const arch = app.runningUnderARM64Translation ? 'arm64' : process.arch;
+        return byName(n => n.endsWith(`-mac-${arch}.dmg`))
+            || byName(n => n.endsWith('.dmg') && n.includes(arch))
+            || '';
+    }
+    if (process.platform === 'win32') {
+        return byName(n => n.endsWith('.exe'))
+            || byName(n => n.endsWith('.zip') && !n.includes('mac'))
+            || '';
+    }
+    return '';
+}
+
 export class AppUpdater {
     private configStore: ConfigStore;
     private mainWindow: BrowserWindow | null = null;
@@ -187,16 +214,7 @@ export class AppUpdater {
             const latestVersion = (release.tag_name || '').replace(/^v/, '');
             const releaseNotes = release.body || '';
 
-            // Find .exe asset for Windows
-            let downloadUrl = '';
-            if (release.assets && Array.isArray(release.assets)) {
-                const exeAsset = release.assets.find((a: any) =>
-                    a.name && (a.name.endsWith('.exe') || a.name.endsWith('.zip')) && a.browser_download_url
-                );
-                if (exeAsset) {
-                    downloadUrl = exeAsset.browser_download_url;
-                }
-            }
+            const downloadUrl = pickReleaseAsset(Array.isArray(release.assets) ? release.assets : []);
 
             // Only a strictly newer release counts. Comparing for inequality
             // used to flag a *downgrade* as an update whenever the local build
@@ -248,7 +266,8 @@ export class AppUpdater {
             console.log(`[AppUpdater] Downloading from: ${finalUrl}`);
 
             // Step 2: Download the file
-            const fileName = path.basename(new URL(downloadUrl).pathname) || '4RouterAi-Setup.exe';
+            const fileName = decodeURIComponent(path.basename(new URL(downloadUrl).pathname))
+                || (process.platform === 'darwin' ? '4RouterAi.dmg' : '4RouterAi-Setup.exe');
             const filePath = path.join(os.tmpdir(), fileName);
 
             this.sendProgress(0, `正在下载 ${fileName}...`);
@@ -257,7 +276,8 @@ export class AppUpdater {
 
             this.sendProgress(100, '下载完成！');
 
-            // Step 3: Open the downloaded file
+            // Step 3: Open the downloaded file — runs the installer on Windows,
+            // mounts the disk image (drag-to-Applications window) on macOS.
             shell.openPath(filePath);
 
             return { success: true, filePath };

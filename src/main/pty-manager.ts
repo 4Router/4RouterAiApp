@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { spawn as ptySpawn, IPty } from 'node-pty';
 import { ToolManager, LaunchConfig } from './tool-manager';
 import { buildSanitizedEnv } from './process-env';
+import { userShell } from './shell-env';
 
 /** Per-session scrollback kept in main so late-joining clients can replay it.
  *  Measured in JS string length (UTF-16 units) to stay consistent with the
@@ -99,6 +100,23 @@ export function buildWindowsToolCommand(bin: string, args: string[]): string {
     return cmdParts.join(' ');
 }
 
+/** Default working directory when the user hasn't picked one.
+ *
+ *  ~/Documents/4RouterAi as before. On macOS Documents is TCC-protected: the
+ *  first access shows a consent prompt, and if the user declines, the mkdir
+ *  fails with EPERM — fall back to the home folder rather than refusing to
+ *  open a terminal at all. */
+function ensureDefaultCwd(): string {
+    const preferred = path.join(os.homedir(), 'Documents', '4RouterAi');
+    try {
+        fs.mkdirSync(preferred, { recursive: true });
+        return preferred;
+    } catch (err) {
+        console.warn(`[PtyManager] cannot use ${preferred}, falling back to home:`, err);
+        return os.homedir();
+    }
+}
+
 export class PtyManager {
     private sessions: Map<string, PtySession> = new Map();
     private dataCallbacks: DataCallback[] = [];
@@ -147,11 +165,7 @@ export class PtyManager {
 
     createSession(toolId: string, cwd?: string): string {
         const sessionId = `session-${++this.sessionCounter}-${Date.now()}`;
-        const defaultCwd = path.join(os.homedir(), 'Documents', '4RouterAi');
-        if (!cwd) {
-            fs.mkdirSync(defaultCwd, { recursive: true });
-        }
-        const workingDir = cwd || defaultCwd;
+        const workingDir = cwd || ensureDefaultCwd();
 
         const isWin = os.platform() === 'win32';
         const shellEnv: { [key: string]: string } = {
@@ -159,6 +173,9 @@ export class PtyManager {
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
         };
+        // Electron-internal switches must not leak into the user's shell.
+        delete shellEnv.ELECTRON_RUN_AS_NODE;
+        delete shellEnv.ELECTRON_NO_ATTACH_CONSOLE;
         const toolBaseEnv = buildSanitizedEnv({
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
@@ -175,7 +192,10 @@ export class PtyManager {
                     env: shellEnv,
                 });
             } else {
-                pty = spawnPty(process.env.SHELL || '/bin/bash', [], {
+                // Login shell on macOS, like Terminal.app and iTerm2 — that's
+                // what makes ~/.zprofile (Homebrew's shellenv, etc.) apply.
+                const shellArgs = os.platform() === 'darwin' ? ['-l'] : [];
+                pty = spawnPty(userShell(), shellArgs, {
                     cwd: workingDir,
                     env: shellEnv,
                 });

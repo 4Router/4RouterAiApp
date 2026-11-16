@@ -1,6 +1,6 @@
 {
     "name": "4routerai",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "description": "All-in-one AI coding assistant — Claude Code & Codex in a single app",
     "engines": {
         "node": ">=20"
@@ -17,6 +17,7 @@
         "verify": "npm run build && node scripts/verify-web-auth.cjs && node scripts/verify-version.cjs && node scripts/verify-codex-config.cjs",
         "verify:remote": "npm run build && node scripts/verify-web-auth.cjs",
         "package": "npm run build && npm run bundle-tools && electron-builder --win",
+        "package:mac": "bash scripts/build-mac.sh",
         "start": "electron .",
         "start:dev": "electron . --dev"
     },
@@ -49,6 +50,7 @@
         "directories": {
             "output": "release"
         },
+        "afterPack": "scripts/mac-adhoc-sign.cjs",
         "win": {
             "icon": "resources/icon.ico",
             "target": [
@@ -67,6 +69,30 @@
             "createStartMenuShortcut": true,
             "deleteAppDataOnUninstall": true
         },
+        "mac": {
+            "icon": "resources/icon.icns",
+            "category": "public.app-category.developer-tools",
+            "target": [
+                "dmg"
+            ],
+            "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+            "hardenedRuntime": true,
+            "gatekeeperAssess": false,
+            "entitlements": "build/entitlements.mac.plist",
+            "entitlementsInherit": "build/entitlements.mac.plist",
+            "extendInfo": {
+                "NSDocumentsFolderUsageDescription": "4RouterAi 中运行的终端与 AI 编程工具需要读写你在“文稿”中的项目文件。",
+                "NSDesktopFolderUsageDescription": "4RouterAi 中运行的终端与 AI 编程工具需要读写你在“桌面”上的项目文件。",
+                "NSDownloadsFolderUsageDescription": "4RouterAi 中运行的终端与 AI 编程工具需要读写“下载”文件夹中的文件。",
+                "NSRemovableVolumesUsageDescription": "4RouterAi 中运行的终端与 AI 编程工具需要访问可移除宗卷上的项目文件。",
+                "NSNetworkVolumesUsageDescription": "4RouterAi 中运行的终端与 AI 编程工具需要访问网络宗卷上的项目文件。",
+                "NSLocalNetworkUsageDescription": "远程访问功能需要让局域网内的设备连接到 4RouterAi。"
+            }
+        },
+        "dmg": {
+            "title": "${productName} ${version}",
+            "writeUpdateInfo": false
+        },
         "asar": true,
         "asarUnpack": [
             "resources/bundled-tools/**",
@@ -81,7 +107,7 @@
         "files": [
             "dist/**/*",
             "resources/**/*",
-            "!resources/bundled-tools/*/node_modules/.cache/**"
+            "!resources/bundled-tools{,/**/*}"
         ]
     }
 }

@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 // Expose a safe API to the renderer process via contextBridge
 contextBridge.exposeInMainWorld('routerAi', {
+    /** Host OS of this desktop window (absent in the remote-browser shim). */
+    platform: process.platform,
+
     // ===== Tool Management =====
     tools: {
         list: () => ipcRenderer.invoke('tools:list'),
@@ -124,11 +127,18 @@ contextBridge.exposeInMainWorld('routerAi', {
         close: () => ipcRenderer.send('window:close'),
         setTitleBarOverlay: (colors: { color: string; symbolColor: string }) =>
             ipcRenderer.invoke('window:set-titlebar-overlay', colors),
+        /** macOS: full screen hides the traffic lights. */
+        onFullScreenChange: (callback: (fullScreen: boolean) => void) => {
+            const listener = (_event: any, fullScreen: boolean) => callback(fullScreen);
+            ipcRenderer.on('window:fullscreen', listener);
+            return () => ipcRenderer.removeListener('window:fullscreen', listener);
+        },
     },
 
     // ===== App =====
     app: {
         getVersion: () => ipcRenderer.invoke('app:get-version'),
+        getPlatformInfo: () => ipcRenderer.invoke('app:get-platform-info'),
         isEncryptionAvailable: () => ipcRenderer.invoke('app:is-encryption-available'),
         checkAppUpdate: () => ipcRenderer.invoke('app:check-app-update'),
         downloadUpdate: (url: string) => ipcRenderer.invoke('app:download-update', url),

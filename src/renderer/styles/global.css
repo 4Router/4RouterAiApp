@@ -56,8 +56,8 @@
     --grid-dot: rgba(163, 177, 210, 0.16);
 
     /* ---- Typography ---- */
-    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-    --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'SF Mono', Menlo, monospace;
 
     /* ---- Metrics ---- */
     --titlebar-height: 38px;
@@ -352,6 +352,21 @@ button:focus-visible,
 .titlebar-btn-close:hover {
     background: var(--red);
     color: #fff;
+}
+
+/* macOS: the native traffic lights sit at the left end of this bar (see
+   trafficLightPosition in main), so the custom caption buttons go away and
+   the logo moves clear of them. Full screen hides the lights. */
+html[data-platform="darwin"] #titlebar .titlebar-controls {
+    display: none;
+}
+
+html[data-platform="darwin"] .titlebar-drag {
+    padding-left: 84px;
+}
+
+html[data-platform="darwin"].is-fullscreen .titlebar-drag {
+    padding-left: 14px;
 }
 
 /* =============================================================

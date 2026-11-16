@@ -55,7 +55,7 @@ const defaults: ConfigSchema = {
     codexVerbosity: 'high',
     ccEffortLevel: 'high',
     fontSize: 14,
-    fontFamily: 'Cascadia Code, Consolas, monospace',
+    fontFamily: 'Cascadia Code, Consolas, Menlo, monospace',
     ccBypassPermissions: false,
     codexBypassPermissions: false,
     firstLaunch: true,

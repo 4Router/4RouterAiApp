@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
@@ -15,6 +15,13 @@ import { WebAuth, AccessRequest } from './web-auth';
 import { WebAudit } from './web-audit';
 import { WebCertStore } from './web-cert';
 import { installCaTrust, isCaTrusted, trustSupported } from './web-trust';
+import { resolveShellEnv } from './shell-env';
+
+const isMac = process.platform === 'darwin';
+
+// Started before `ready` so the login shell runs in parallel with Electron's
+// own startup; the first terminal/tool session awaits it (see pty:create).
+const shellEnvReady = resolveShellEnv();
 
 let mainWindow: BrowserWindow | null = null;
 let ptyManager: PtyManager;
@@ -35,6 +42,100 @@ function getResourcesPath(): string {
     return path.join(__dirname, '..', '..', 'resources', 'bundled-tools');
 }
 
+/** Writable home for in-app tool updates (see ToolManager). Not used on Windows. */
+function getUserToolsPath(): string | undefined {
+    return process.platform === 'win32'
+        ? undefined
+        : path.join(app.getPath('userData'), 'tools');
+}
+
+/**
+ * Title bar: the renderer draws its own 38px bar on every platform. Windows and
+ * Linux get the native caption buttons through titleBarOverlay; macOS keeps
+ * its traffic lights, nudged down to sit centred in that bar (the renderer
+ * leaves room for them via html[data-platform="darwin"]).
+ */
+function titleBarOptions(): Electron.BrowserWindowConstructorOptions {
+    if (isMac) {
+        return {
+            titleBarStyle: 'hidden',
+            trafficLightPosition: { x: 14, y: 12 },
+        };
+    }
+    return {
+        frame: false,
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+            color: '#0b0d12',
+            symbolColor: '#9aa3b8',
+            height: 38,
+        },
+    };
+}
+
+/**
+ * macOS needs an explicit application menu: without the Edit roles, Cmd+C /
+ * Cmd+V / Cmd+A do nothing in text fields, and Electron's default menu would
+ * expose Reload (wiping every tab's terminal view). Window close is left off
+ * Cmd+W on purpose — closing the window ends every running session.
+ */
+function buildMacMenu(): void {
+    const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+    const template: Electron.MenuItemConstructorOptions[] = [
+        {
+            label: app.name,
+            submenu: [
+                { role: 'about', label: `关于 ${app.name}` },
+                { type: 'separator' },
+                { role: 'services', label: '服务' },
+                { type: 'separator' },
+                { role: 'hide', label: `隐藏 ${app.name}` },
+                { role: 'hideOthers', label: '隐藏其他' },
+                { role: 'unhide', label: '全部显示' },
+                { type: 'separator' },
+                { role: 'quit', label: `退出 ${app.name}` },
+            ],
+        },
+        {
+            label: '编辑',
+            submenu: [
+                { role: 'undo', label: '撤销' },
+                { role: 'redo', label: '重做' },
+                { type: 'separator' },
+                { role: 'cut', label: '剪切' },
+                { role: 'copy', label: '拷贝' },
+                { role: 'paste', label: '粘贴' },
+                { role: 'selectAll', label: '全选' },
+            ],
+        },
+        {
+            label: '显示',
+            submenu: [
+                { role: 'resetZoom', label: '实际大小' },
+                { role: 'zoomIn', label: '放大' },
+                { role: 'zoomOut', label: '缩小' },
+                { type: 'separator' },
+                { role: 'togglefullscreen', label: '切换全屏' },
+                ...(isDev ? [
+                    { type: 'separator' } as const,
+                    { role: 'toggleDevTools', label: '开发者工具' } as const,
+                ] : []),
+            ],
+        },
+        {
+            label: '窗口',
+            role: 'window',
+            submenu: [
+                { role: 'minimize', label: '最小化' },
+                { role: 'zoom', label: '缩放' },
+                { type: 'separator' },
+                { role: 'front', label: '前置全部窗口' },
+            ],
+        },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function createWindow(): void {
     mainWindow = new BrowserWindow({
         width: 1200,
@@ -43,13 +144,7 @@ function createWindow(): void {
         minHeight: 600,
         title: '4RouterAi',
         backgroundColor: '#0b0d12',
-        frame: false,
-        titleBarStyle: 'hidden',
-        titleBarOverlay: {
-            color: '#0b0d12',
-            symbolColor: '#9aa3b8',
-            height: 38,
-        },
+        ...titleBarOptions(),
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
@@ -75,6 +170,13 @@ function createWindow(): void {
         mainWindow = null;
     });
 
+    // The traffic lights disappear in macOS full screen; tell the renderer so
+    // the title bar can reclaim the space reserved for them.
+    if (isMac) {
+        mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window:fullscreen', true));
+        mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window:fullscreen', false));
+    }
+
     // Open links in default browser
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
         shell.openExternal(url);
@@ -97,6 +199,7 @@ function setupIPC() {
         appUpdater,
         authManager,
         keyProvisioner,
+        whenEnvReady: () => shellEnvReady,
         webController: {
             getStatus: () => getWebStatus(),
             apply: async (cfg: WebApplyConfig) => {
@@ -253,8 +356,10 @@ function setupIPC() {
 app.whenReady().then(() => {
     const bundledToolsPath = getResourcesPath();
 
+    if (isMac) buildMacMenu();
+
     configStore = new ConfigStore();
-    toolManager = new ToolManager(bundledToolsPath, configStore);
+    toolManager = new ToolManager(bundledToolsPath, configStore, getUserToolsPath());
     ptyManager = new PtyManager(toolManager);
     appUpdater = new AppUpdater(configStore);
     authManager = new AuthManager(configStore);
@@ -586,12 +691,28 @@ async function getWebStatus(): Promise<Record<string, any>> {
     };
 }
 
-app.on('window-all-closed', () => {
+let shutDown = false;
+
+/** Stop the bridge, flush the audit log and end every session — once. */
+function shutdown(): void {
+    if (shutDown) return;
+    shutDown = true;
     webBridge?.stop();
     // Audit writes are debounced; make sure the tail reaches disk before exit.
     webAudit?.flush();
     ptyManager?.destroyAll();
+}
+
+// The window owns every PTY session, so closing it ends the app on macOS too
+// (instead of idling in the Dock with nothing running).
+app.on('window-all-closed', () => {
+    shutdown();
     app.quit();
+});
+
+// Cmd+Q / app.quit() closes the windows without emitting window-all-closed.
+app.on('will-quit', () => {
+    shutdown();
 });
 
 app.on('activate', () => {

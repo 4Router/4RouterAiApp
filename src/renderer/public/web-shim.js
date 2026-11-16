@@ -410,6 +410,7 @@
         },
         app: {
             getVersion: function () { return invoke('app:get-version'); },
+            getPlatformInfo: function () { return invoke('app:get-platform-info'); },
             isEncryptionAvailable: function () { return invoke('app:is-encryption-available'); },
             checkAppUpdate: function () { return invoke('app:check-app-update'); },
             downloadUpdate: function (url) { return invoke('app:download-update', url); },

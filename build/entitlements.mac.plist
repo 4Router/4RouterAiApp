@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements, applied only when the app is signed with a
+  real Developer ID (electron-builder signs every Mach-O in the bundle with
+  these, including the bundled node / claude / codex executables).
+  V8 and Bun both JIT-compile, and Electron loads frameworks that aren't signed
+  by our team — without these three the app and the tools fail to start.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

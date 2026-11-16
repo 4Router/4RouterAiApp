@@ -17,9 +17,15 @@ const os = require('os');
 const path = require('path');
 
 const APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), '4router-codexcfg-'));
-process.env.APPDATA = APPDATA;
+// Point the tools' config root into the temp dir: %APPDATA% on Windows,
+// $HOME (→ ~/Library/Application Support, ~/.config) everywhere else.
+if (process.platform === 'win32') {
+    process.env.APPDATA = APPDATA;
+} else {
+    process.env.HOME = APPDATA;
+}
 
-const { ToolManager } = require('../dist/main/tool-manager');
+const { ToolManager, getAppDataRoot } = require('../dist/main/tool-manager');
 
 let passed = 0;
 let failed = 0;
@@ -38,7 +44,7 @@ function check(name, condition, detail) {
 function makeBundledTools() {
     const root = path.join(APPDATA, 'bundled-tools');
     const files = [
-        ['node-runtime', 'node.exe'],
+        ['node-runtime', process.platform === 'win32' ? 'node.exe' : 'node'],
         ['node-runtime', 'node_modules', 'npm', 'bin', 'npm-cli.js'],
         ['codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'],
     ];
@@ -65,7 +71,7 @@ function makeStore(overrides = {}) {
     };
 }
 
-const codexHome = path.join(APPDATA, '4RouterAi', 'codex-home');
+const codexHome = path.join(getAppDataRoot(), 'codex-home');
 const configFile = path.join(codexHome, 'config.toml');
 const authFile = path.join(codexHome, 'auth.json');
 

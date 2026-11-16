@@ -203,8 +203,35 @@ function refreshTerminal(/** @type {TabState} */ tab) {
     });
 }
 
+// ===== Platform =====
+/** Keyboard of the machine in front of the user (a remote browser may differ from the host). */
+const IS_MAC_KEYBOARD = /Mac|iPhone|iPad|iPod/i.test(
+    /** @type {any} */ (navigator).userAgentData?.platform || navigator.platform || ''
+);
+
+/** Host OS of this desktop window; undefined in a remote browser. */
+const HOST_PLATFORM = api.platform;
+
+function setupPlatform() {
+    if (HOST_PLATFORM) {
+        document.documentElement.setAttribute('data-platform', HOST_PLATFORM);
+    }
+    // macOS full screen hides the traffic lights — give their space back.
+    api.window?.onFullScreenChange?.((/** @type {boolean} */ fullScreen) => {
+        document.documentElement.classList.toggle('is-fullscreen', !!fullScreen);
+    });
+    // The Terminal tab opens the HOST's shell (PowerShell, zsh, bash…).
+    api.app?.getPlatformInfo?.()
+        .then((/** @type {{ shell?: string }} */ info) => {
+            const badge = $('#badge-terminal');
+            if (badge && info?.shell) badge.textContent = info.shell;
+        })
+        .catch(() => { /* keep the static label */ });
+}
+
 // ===== Initialization =====
 async function init() {
+    setupPlatform();
     setupWindowControls();
     setupToggleVisibility();
     await checkFirstLaunch();
@@ -228,9 +255,12 @@ async function applyTheme(/** @type {string} */ themeOverride) {
     const theme = themeOverride || (await api.config.get('theme')) || 'fruit';
     document.documentElement.setAttribute('data-theme', theme);
 
-    // Update native Windows titlebar button colors (must match --titlebar-bg)
+    // Update native Windows titlebar button colors (must match --titlebar-bg).
+    // macOS keeps its own traffic lights, which take no colours.
     try {
-        if (theme === 'light') {
+        if (HOST_PLATFORM === 'darwin') {
+            // nothing to recolour
+        } else if (theme === 'light') {
             api.window.setTitleBarOverlay({ color: '#f2f3f7', symbolColor: '#5c6478' });
         } else if (theme === 'fruit') {
             api.window.setTitleBarOverlay({ color: '#fbf3e3', symbolColor: '#7e6135' });
@@ -953,7 +983,7 @@ function createTab(
     const terminal = new Terminal({
         theme: getTerminalTheme(themeName),
         fontSize: 14,
-        fontFamily: 'JetBrains Mono, Consolas, monospace',
+        fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
         cursorBlink: true,
         cursorStyle: 'bar',
         allowProposedApi: true,
@@ -1025,6 +1055,28 @@ function createTab(
     // ---- Keyboard interception ----
     terminal.attachCustomKeyEventHandler((e) => {
         if (e.type !== 'keydown') return true;
+
+        // macOS: Cmd+C / Cmd+V copy and paste; Ctrl+C is left alone so it
+        // reaches the PTY as the interrupt, like in every Mac terminal.
+        if (IS_MAC_KEYBOARD) {
+            const plainCmd = e.metaKey && !e.ctrlKey && !e.altKey;
+            if (plainCmd && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
+                const sel = terminal.getSelection();
+                if (sel) {
+                    navigator.clipboard.writeText(sel);
+                    terminal.clearSelection();
+                }
+                e.preventDefault();
+                return false;
+            }
+            if (plainCmd && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) {
+                // preventDefault keeps the menu's Paste from pasting a second time.
+                e.preventDefault();
+                pasteFromClipboard(sessionId);
+                return false;
+            }
+            return true;
+        }
 
         // Ctrl+C: always intercept — copy if selected, otherwise do nothing (no SIGINT)
         if (e.ctrlKey && (e.code === 'KeyC' || e.key === 'c' || e.key === 'C')) {
@@ -1444,7 +1496,7 @@ function setupSettings() {
         if (verbosity) await api.config.set('codexVerbosity', verbosity);
         await api.config.set('proxy', proxy || '');
         await api.config.set('fontSize', fontSize);
-        await api.config.set('fontFamily', fontFamily || 'JetBrains Mono, Consolas, monospace');
+        await api.config.set('fontFamily', fontFamily || 'JetBrains Mono, Menlo, Consolas, monospace');
 
         // Theme
         const theme = /** @type {HTMLSelectElement} */ ($('#settings-theme'))?.value || 'dark';
@@ -1796,7 +1848,9 @@ async function ensureCaTrustBeforeEnable() {
     if (!window.confirm(
         '开启远程访问前，需要先把本机根证书加入系统信任。\n\n'
         + '这样浏览器第一次打开就会显示为安全连接，不会缓存“不安全”警告。\n'
-        + '点击「确定」后，请在系统弹出的安全警告对话框中选择「是」。'
+        + (HOST_PLATFORM === 'darwin'
+            ? '点击「确定」后，请在系统弹出的对话框中输入登录密码（或使用触控 ID）以更新证书信任设置。'
+            : '点击「确定」后，请在系统弹出的安全警告对话框中选择「是」。')
     )) {
         showToast('已取消开启：请先完成根证书信任', 'info');
         return false;
@@ -2409,7 +2463,7 @@ async function openSettings() {
 
     if (proxyInput) proxyInput.value = proxy || '';
     if (fontSizeInput) fontSizeInput.value = String(fontSize || 14);
-    if (fontFamilyInput) fontFamilyInput.value = fontFamily || 'JetBrains Mono, Consolas, monospace';
+    if (fontFamilyInput) fontFamilyInput.value = fontFamily || 'JetBrains Mono, Menlo, Consolas, monospace';
     if (anthropicBaseUrlInput) anthropicBaseUrlInput.value = anthropicBaseUrl || '';
     if (openaiBaseUrlInput) openaiBaseUrlInput.value = openaiBaseUrl || '';
 

@@ -8,15 +8,18 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
+  # ── Read version & check if release already exists ──
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      exists: ${{ steps.check_tag.outputs.exists }}
 
     steps:
-      # ── Checkout ──
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Read version & check if release already exists ──
       - name: Read version from package.json
         id: version
         shell: bash
@@ -38,9 +41,17 @@ jobs:
             echo "🆕 Tag ${{ steps.version.outputs.tag }} is new, proceeding with build."
           fi
 
-      # ── Setup ──
+  # ── Windows (NSIS installer) ──
+  build-windows:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
-        if: steps.check_tag.outputs.exists == 'false'
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -48,31 +59,24 @@ jobs:
       # node-pty ships N-API prebuilds (incl. bundled conpty.dll), so no
       # node-gyp compile or electron-rebuild step is needed.
       - name: Install dependencies
-        if: steps.check_tag.outputs.exists == 'false'
         run: npm install
 
-      # ── Build ──
       - name: Compile TypeScript (main process)
-        if: steps.check_tag.outputs.exists == 'false'
         run: npx tsc -p tsconfig.main.json
 
       - name: Build Vite (renderer)
-        if: steps.check_tag.outputs.exists == 'false'
         run: npx vite build
 
       - name: Bundle Node.js runtime and CLI tools
-        if: steps.check_tag.outputs.exists == 'false'
         run: node scripts/bundle-tools.mjs
 
       - name: Cache electron-builder binaries
-        if: steps.check_tag.outputs.exists == 'false'
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\electron-builder\Cache
           key: electron-builder-cache-${{ runner.os }}-nsis
 
       - name: Package Windows installer
-        if: steps.check_tag.outputs.exists == 'false'
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 15
@@ -83,12 +87,89 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
 
-      # ── Release ──
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release/*.exe
+          if-no-files-found: error
+
+  # ── macOS (one DMG per CPU) ──
+  # Both architectures build on the Apple-silicon runner: bundle-tools.mjs
+  # downloads the Intel Node runtime and asks npm for the x64 native packages
+  # (TARGET_ARCH), and electron-builder fetches the x64 Electron itself.
+  build-mac:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Also the Node version that gets bundled into the app.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Compile TypeScript (main process)
+        run: npx tsc -p tsconfig.main.json
+
+      - name: Build Vite (renderer)
+        run: npx vite build
+
+      - name: Bundle Node.js runtime and CLI tools (${{ matrix.arch }})
+        run: node scripts/bundle-tools.mjs
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      # No signing certificate in CI: the afterPack hook ad-hoc signs the app.
+      - name: Package macOS DMG (${{ matrix.arch }})
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 20
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npx electron-builder --mac dmg --${{ matrix.arch }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: release/*.dmg
+          if-no-files-found: error
+
+  # ── Release ──
+  # Publishes once the Windows installer is built; a failed Mac build leaves
+  # its DMG out of the release instead of blocking it.
+  release:
+    needs: [check, build-windows, build-mac]
+    if: ${{ !cancelled() && needs.check.outputs.exists == 'false' && needs.build-windows.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
       - name: Create GitHub Release
-        if: steps.check_tag.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: ${{ needs.check.outputs.tag }}
           generate_release_notes: true
-          files: release/*.exe
+          files: |
+            artifacts/*.exe
+            artifacts/*.dmg
